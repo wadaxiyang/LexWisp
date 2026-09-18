@@ -233,16 +233,3 @@ cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-w
 
 产物不得包含 API Key、个人数据、日志、构建缓存或无权分发的资源。可执行文件之外有真实运行依赖时随包提供，不为“单文件”删除必要内容。最终在无开发工具的普通用户环境验证解压运行。
 
-## 11. 上游依据
-
-使用锁定版本源码决定精确签名，以下资料用于核对关键语义，不替代本项目的构建与实机验证。
-
-- [K1　GPUI-Kit API](https://docs.rs/gpui-kit/latest/gpui_kit/)
-- [K2　GPUI-Kit Getting Started](https://gpui-kit.com/docs/getting-started/)
-- [K3　QuitMode](https://docs.rs/gpui-kit/latest/gpui_kit/enum.QuitMode.html)
-- [K4　GPUI-Kit Coding Guides](https://gpui-kit.com/docs/coding-guides/)
-- [K5　Tokio spawn_blocking](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)
-- [K6　rquickjs Runtime](https://docs.rs/rquickjs/latest/rquickjs/runtime/struct.Runtime.html)
-- [K7　Microsoft UI Automation Threading Issues](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)
-- [K8　Microsoft SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
-- [K9　GPUI-Kit Testing](https://gpui-kit.com/docs/test/)
