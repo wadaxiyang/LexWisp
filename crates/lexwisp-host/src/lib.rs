@@ -1,5 +1,7 @@
 mod ai;
+mod declarative;
 mod execution;
+mod favorites;
 mod invocation;
 mod providers;
 mod registry;
@@ -10,10 +12,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use async_channel::Sender;
 use lexwisp_core::{
-    ActionUiPort, AppSettings, ChatRunPort, HostUiCommand, PluginId, ProviderUiPort,
-    SettingsUiPort, TaskOwner,
+    ActionUiPort, AppSettings, ChatRunPort, ContextUiPort, FavoriteUiPort, HostUiCommand, PluginId,
+    ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
 };
-use lexwisp_platform_windows::{WindowsCredentialStore, WindowsShellHandle};
+use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
 use tokio::runtime::{Builder, Runtime};
 
@@ -26,7 +28,9 @@ pub use tasks::{HostTaskPort, TaskScope};
 use settings::SettingsService;
 
 pub use ai::AiService;
+pub use declarative::{DeclarativeController, DeclarativePackage};
 pub use execution::ExecutionStore;
+pub use favorites::FavoriteService;
 pub use invocation::InvocationSupervisor;
 pub use providers::{ProviderRegistry, ProviderService};
 
@@ -52,6 +56,8 @@ pub struct HostHandles {
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
     action_ui: Arc<dyn ActionUiPort>,
+    context: Arc<dyn ContextUiPort>,
+    favorites: Arc<dyn FavoriteUiPort>,
     executions: Arc<ExecutionStore>,
     supervisor: Arc<InvocationSupervisor>,
     ui_commands: HostUiCommandPort,
@@ -86,12 +92,30 @@ impl HostHandles {
         self.action_ui.clone()
     }
 
+    pub fn context(&self) -> Arc<dyn ContextUiPort> {
+        self.context.clone()
+    }
+
+    pub fn favorites(&self) -> Arc<dyn FavoriteUiPort> {
+        self.favorites.clone()
+    }
+
     pub fn executions(&self) -> Arc<ExecutionStore> {
         self.executions.clone()
     }
 
     pub fn chat_run_port(&self, plugin_id: PluginId) -> Arc<dyn ChatRunPort> {
         Arc::new(invocation::ScopedChatRunPort::new(
+            plugin_id,
+            self.actions.clone(),
+            self.capabilities.clone(),
+            self.supervisor.clone(),
+            self.tasks.clone(),
+        ))
+    }
+
+    pub fn text_run_port(&self, plugin_id: PluginId) -> Arc<dyn TextRunPort> {
+        Arc::new(invocation::ScopedTextRunPort::new(
             plugin_id,
             self.actions.clone(),
             self.capabilities.clone(),
@@ -117,6 +141,7 @@ impl Host {
         initial_settings: AppSettings,
         config: ConfigStore,
         shell: WindowsShellHandle,
+        context: WindowsContextHandle,
         ui_commands: Sender<HostUiCommand>,
         executable: PathBuf,
     ) -> Result<(Self, HostHandles), String> {
@@ -145,6 +170,7 @@ impl Host {
         let provider_registry = ProviderRegistry::new(settings.snapshot().settings());
         let credentials: Arc<dyn lexwisp_core::CredentialStore> = Arc::new(WindowsCredentialStore);
         let ai = Arc::new(AiService::new().map_err(|error| error.to_string())?);
+        let favorites: Arc<dyn FavoriteUiPort> = Arc::new(FavoriteService::new(content.clone()));
         let executions = Arc::new(ExecutionStore::new(content));
         let supervisor = Arc::new(InvocationSupervisor::new(
             ai.clone(),
@@ -168,6 +194,8 @@ impl Host {
             settings,
             providers,
             action_ui,
+            context: Arc::new(context),
+            favorites,
             executions,
             supervisor: supervisor.clone(),
             ui_commands: HostUiCommandPort {

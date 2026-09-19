@@ -4,5 +4,6 @@ mod control_center;
 mod surface;
 
 pub use surface::{
-    QuickShellViewFactory, SurfaceController, SurfaceFactory, SurfaceWindowPlatform, WindowRegistry,
+    QuickShellViewFactory, SurfaceController, SurfaceFactory, SurfaceServices,
+    SurfaceWindowPlatform, WindowRegistry,
 };

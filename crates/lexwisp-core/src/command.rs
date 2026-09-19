@@ -4,9 +4,9 @@ pub enum SurfaceKind {
     ControlCenter,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostUiCommand {
-    ToggleQuickShell,
+    ToggleQuickShell(crate::ContextSnapshot),
     ShowQuickShell,
     ShowControlCenter,
     Quit,

@@ -315,7 +315,7 @@ impl ExecutionObserver for ChatExecutionObserver {
         if state
             .active_assistant
             .as_ref()
-            .is_some_and(|id| id != &snapshot.assistant_message_id)
+            .is_some_and(|id| snapshot.assistant_message_id.as_ref() != Some(id))
             || snapshot.sequence <= state.last_execution_sequence
         {
             return;
@@ -327,7 +327,7 @@ impl ExecutionObserver for ChatExecutionObserver {
         if let Some(message) = state
             .messages
             .iter_mut()
-            .find(|message| message.id == snapshot.assistant_message_id)
+            .find(|message| Some(&message.id) == snapshot.assistant_message_id.as_ref())
         {
             message.content = snapshot.output;
             message.status = match snapshot.status {
@@ -377,10 +377,11 @@ mod tests {
             let snapshot = ExecutionSnapshot {
                 invocation_id: InvocationId::new(),
                 plugin_id: request.action.plugin_id().clone(),
+                action: request.action.clone(),
                 plugin_generation: 1,
-                conversation_id: request.conversation_id,
-                user_message_id: request.user_message_id,
-                assistant_message_id: request.assistant_message_id,
+                conversation_id: Some(request.conversation_id),
+                user_message_id: Some(request.user_message_id),
+                assistant_message_id: Some(request.assistant_message_id),
                 provider_id: ProviderId::parse("fixture").expect("provider ID"),
                 model_id: "fixture".into(),
                 sequence: 1,
@@ -404,10 +405,9 @@ mod tests {
     fn controller_uses_stable_ids_and_projects_the_answer() {
         let controller = ChatController::new(Arc::new(ImmediateRun));
         let conversation = controller.snapshot().conversation_id;
-        let result = futures_lite::future::block_on(controller.execute(ActionRequest {
-            input: "hello".into(),
-        }))
-        .expect("chat succeeds");
+        let result =
+            futures_lite::future::block_on(controller.execute(ActionRequest::manual("hello")))
+                .expect("chat succeeds");
         assert_eq!(result.output, "answer");
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.conversation_id, conversation);

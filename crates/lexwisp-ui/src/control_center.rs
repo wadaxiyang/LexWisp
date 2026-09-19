@@ -13,7 +13,8 @@ use gpui_kit::{
     Styled, Task, Window, div,
 };
 use lexwisp_core::{
-    AppSettings, GlobalHotkey, ProviderDraft, ProviderUiPort, SettingsUiPort, ThemePreference,
+    ActionDescriptor, ActionKind, AppSettings, DismissPolicy, GlobalHotkey, LaunchMode,
+    ProviderDraft, ProviderUiPort, SettingsUiPort, ThemePreference,
 };
 
 use crate::surface::apply_theme;
@@ -21,6 +22,7 @@ use crate::surface::apply_theme;
 pub struct ControlCenter {
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
+    actions: Vec<ActionDescriptor>,
     draft: AppSettings,
     provider_name: Entity<InputState>,
     provider_url: Entity<InputState>,
@@ -40,6 +42,7 @@ impl ControlCenter {
     pub fn new(
         settings: Arc<dyn SettingsUiPort>,
         providers: Arc<dyn ProviderUiPort>,
+        actions: Vec<ActionDescriptor>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -72,6 +75,7 @@ impl ControlCenter {
         Self {
             settings,
             providers,
+            actions,
             draft,
             provider_name,
             provider_url,
@@ -244,6 +248,108 @@ impl Render for ControlCenter {
                     }
                 }))
         });
+        let launch_modes = LaunchMode::ALL.into_iter().map(|mode| {
+            Radio::new(format!("launch-mode-{mode:?}"))
+                .label(mode.label())
+                .checked(self.draft.launch_mode() == mode)
+                .on_change(cx.listener(move |this, checked, _, cx| {
+                    if *checked {
+                        this.draft = this.draft.clone().with_launch_mode(mode);
+                        cx.notify();
+                    }
+                }))
+        });
+        let default_actions = std::iter::once(
+            Radio::new("default-action-none")
+                .label("Not configured")
+                .checked(self.draft.default_action_id().is_none())
+                .on_change(cx.listener(|this, checked, _, cx| {
+                    if *checked {
+                        this.draft = this.draft.clone().with_default_action_id(None);
+                        cx.notify();
+                    }
+                })),
+        )
+        .chain(self.actions.clone().into_iter().map(|descriptor| {
+            let action = descriptor.qualified_id().to_string();
+            let selected = self.draft.default_action_id() == Some(action.as_str());
+            Radio::new(format!("default-action-{action}"))
+                .label(descriptor.display_name().to_owned())
+                .checked(selected)
+                .on_change(cx.listener(move |this, checked, _, cx| {
+                    if *checked {
+                        this.draft = this
+                            .draft
+                            .clone()
+                            .with_default_action_id(Some(action.clone()));
+                        cx.notify();
+                    }
+                }))
+        }));
+        let dismiss_controls = self
+            .actions
+            .clone()
+            .into_iter()
+            .filter(|descriptor| matches!(descriptor.kind(), ActionKind::Declarative(_)))
+            .map(|descriptor| {
+                let action = descriptor.qualified_id().to_string();
+                let current = self.draft.dismiss_override(&action);
+                let default_action = action.clone();
+                let cancel_action = action.clone();
+                let continue_action = action.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_sm().child(descriptor.display_name().to_owned()))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                Radio::new(format!("dismiss-{action}-default"))
+                                    .label("Plugin default")
+                                    .checked(current.is_none())
+                                    .on_change(cx.listener(move |this, checked, _, cx| {
+                                        if *checked {
+                                            this.draft = this.draft.clone().with_dismiss_override(
+                                                default_action.clone(),
+                                                None,
+                                            );
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Radio::new(format!("dismiss-{action}-cancel"))
+                                    .label("Cancel when hidden")
+                                    .checked(current == Some(DismissPolicy::Cancel))
+                                    .on_change(cx.listener(move |this, checked, _, cx| {
+                                        if *checked {
+                                            this.draft = this.draft.clone().with_dismiss_override(
+                                                cancel_action.clone(),
+                                                Some(DismissPolicy::Cancel),
+                                            );
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Radio::new(format!("dismiss-{action}-continue"))
+                                    .label("Continue in background")
+                                    .checked(current == Some(DismissPolicy::Continue))
+                                    .on_change(cx.listener(move |this, checked, _, cx| {
+                                        if *checked {
+                                            this.draft = this.draft.clone().with_dismiss_override(
+                                                continue_action.clone(),
+                                                Some(DismissPolicy::Continue),
+                                            );
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    )
+            });
 
         div()
             .size_full()
@@ -375,6 +481,10 @@ impl Render for ControlCenter {
             )
             .child(div().text_lg().child("System"))
             .child(setting_group("Global shortcut", hotkeys))
+            .child(div().text_lg().child("Quick Shell behavior"))
+            .child(setting_group("Shortcut launch mode", launch_modes))
+            .child(setting_group("Default action", default_actions))
+            .child(setting_group("Dismiss behavior", dismiss_controls))
             .child(setting_group("Theme", themes))
             .child(
                 div()

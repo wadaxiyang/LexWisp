@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -39,6 +39,46 @@ pub enum ThemePreference {
     Dark,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchMode {
+    #[default]
+    ActionPalette,
+    TranslateSelection,
+    DefaultAction,
+}
+
+impl LaunchMode {
+    pub const ALL: [Self; 3] = [
+        Self::ActionPalette,
+        Self::TranslateSelection,
+        Self::DefaultAction,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ActionPalette => "Choose an action",
+            Self::TranslateSelection => "Translate selection",
+            Self::DefaultAction => "Run default action",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DismissPolicy {
+    Cancel,
+    Continue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LaunchRoute {
+    ActionPalette,
+    QuickAsk,
+    Automatic(String),
+    MissingDefaultAction,
+}
+
 impl ThemePreference {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
 
@@ -60,6 +100,14 @@ pub struct AppSettings {
     launch_at_startup: bool,
     popup_retention_seconds: u64,
     #[serde(default)]
+    launch_mode: LaunchMode,
+    #[serde(default = "default_translation_action")]
+    translation_action_id: String,
+    #[serde(default)]
+    default_action_id: Option<String>,
+    #[serde(default)]
+    dismiss_overrides: BTreeMap<String, DismissPolicy>,
+    #[serde(default)]
     providers: Vec<ProviderConfig>,
     #[serde(default)]
     default_profile: Option<ModelProfile>,
@@ -73,6 +121,10 @@ impl Default for AppSettings {
             theme: ThemePreference::System,
             launch_at_startup: false,
             popup_retention_seconds: 30,
+            launch_mode: LaunchMode::ActionPalette,
+            translation_action_id: default_translation_action(),
+            default_action_id: None,
+            dismiss_overrides: BTreeMap::new(),
             providers: Vec::new(),
             default_profile: None,
         }
@@ -88,6 +140,33 @@ impl AppSettings {
             return Err(SettingsError::Invalid(
                 "popup retention must be between 0 and 600 seconds".into(),
             ));
+        }
+        if self.translation_action_id.trim().is_empty() {
+            return Err(SettingsError::Invalid(
+                "translation action ID cannot be empty".into(),
+            ));
+        }
+        self.translation_action_id
+            .parse::<crate::QualifiedActionId>()
+            .map_err(SettingsError::Invalid)?;
+        if self
+            .default_action_id
+            .as_ref()
+            .is_some_and(|id| id.trim().is_empty())
+        {
+            return Err(SettingsError::Invalid(
+                "default action ID cannot be empty".into(),
+            ));
+        }
+        if let Some(action) = &self.default_action_id {
+            action
+                .parse::<crate::QualifiedActionId>()
+                .map_err(SettingsError::Invalid)?;
+        }
+        for action in self.dismiss_overrides.keys() {
+            action
+                .parse::<crate::QualifiedActionId>()
+                .map_err(SettingsError::Invalid)?;
         }
         if let Some(profile) = &self.default_profile {
             let provider = self
@@ -134,6 +213,39 @@ impl AppSettings {
         self.popup_retention_seconds
     }
 
+    pub const fn launch_mode(&self) -> LaunchMode {
+        self.launch_mode
+    }
+
+    pub fn translation_action_id(&self) -> &str {
+        &self.translation_action_id
+    }
+
+    pub fn default_action_id(&self) -> Option<&str> {
+        self.default_action_id.as_deref()
+    }
+
+    pub fn launch_route(&self, has_verified_selection: bool) -> LaunchRoute {
+        if !has_verified_selection {
+            return LaunchRoute::QuickAsk;
+        }
+        match self.launch_mode {
+            LaunchMode::ActionPalette => LaunchRoute::ActionPalette,
+            LaunchMode::TranslateSelection => {
+                LaunchRoute::Automatic(self.translation_action_id.clone())
+            }
+            LaunchMode::DefaultAction => self
+                .default_action_id
+                .clone()
+                .map(LaunchRoute::Automatic)
+                .unwrap_or(LaunchRoute::MissingDefaultAction),
+        }
+    }
+
+    pub fn dismiss_override(&self, action: &str) -> Option<DismissPolicy> {
+        self.dismiss_overrides.get(action).copied()
+    }
+
     pub fn providers(&self) -> &[ProviderConfig] {
         &self.providers
     }
@@ -166,6 +278,30 @@ impl AppSettings {
         self
     }
 
+    pub fn with_launch_mode(mut self, mode: LaunchMode) -> Self {
+        self.launch_mode = mode;
+        self
+    }
+
+    pub fn with_default_action_id(mut self, id: Option<String>) -> Self {
+        self.default_action_id = id;
+        self
+    }
+
+    pub fn with_dismiss_override(
+        mut self,
+        action: impl Into<String>,
+        policy: Option<DismissPolicy>,
+    ) -> Self {
+        let action = action.into();
+        if let Some(policy) = policy {
+            self.dismiss_overrides.insert(action, policy);
+        } else {
+            self.dismiss_overrides.remove(&action);
+        }
+        self
+    }
+
     pub fn with_provider(mut self, provider: ProviderConfig, profile: ModelProfile) -> Self {
         self.providers
             .retain(|existing| existing.id() != provider.id());
@@ -173,6 +309,10 @@ impl AppSettings {
         self.default_profile = Some(profile);
         self
     }
+}
+
+fn default_translation_action() -> String {
+    "org.lexwisp.translate/translate".into()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -236,5 +376,34 @@ mod tests {
             settings.validate(),
             Err(SettingsError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn all_launch_modes_have_explicit_selection_and_no_selection_routes() {
+        for mode in LaunchMode::ALL {
+            let settings = AppSettings::default()
+                .with_launch_mode(mode)
+                .with_default_action_id(Some("org.lexwisp.polish/polish".into()));
+            assert_eq!(settings.launch_route(false), LaunchRoute::QuickAsk);
+            match mode {
+                LaunchMode::ActionPalette => {
+                    assert_eq!(settings.launch_route(true), LaunchRoute::ActionPalette)
+                }
+                LaunchMode::TranslateSelection => assert_eq!(
+                    settings.launch_route(true),
+                    LaunchRoute::Automatic("org.lexwisp.translate/translate".into())
+                ),
+                LaunchMode::DefaultAction => assert_eq!(
+                    settings.launch_route(true),
+                    LaunchRoute::Automatic("org.lexwisp.polish/polish".into())
+                ),
+            }
+        }
+        assert_eq!(
+            AppSettings::default()
+                .with_launch_mode(LaunchMode::DefaultAction)
+                .launch_route(true),
+            LaunchRoute::MissingDefaultAction
+        );
     }
 }

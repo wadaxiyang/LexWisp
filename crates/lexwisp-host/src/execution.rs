@@ -5,8 +5,9 @@ use std::{
 };
 
 use lexwisp_core::{
-    ConversationId, ExecutionCheckpoint, ExecutionObserver, ExecutionSnapshot, ExecutionStatus,
-    InvocationId, MessageId, PluginId, ProviderId, StorageState,
+    ChatCheckpoint, ConversationId, ExecutionCheckpoint, ExecutionObserver, ExecutionSnapshot,
+    ExecutionStatus, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId,
+    StorageState,
 };
 use lexwisp_storage::ContentStore;
 
@@ -17,25 +18,22 @@ const CHECKPOINT_BYTES: usize = 16 * 1024;
 pub(crate) struct ExecutionStart {
     pub invocation_id: InvocationId,
     pub plugin_id: PluginId,
+    pub action: QualifiedActionId,
     pub plugin_generation: u64,
-    pub conversation_id: ConversationId,
-    pub user_message_id: MessageId,
-    pub assistant_message_id: MessageId,
+    pub conversation_id: Option<ConversationId>,
+    pub user_message_id: Option<MessageId>,
+    pub assistant_message_id: Option<MessageId>,
     pub provider_id: ProviderId,
     pub model_id: String,
     pub input: String,
-    pub conversation_title: String,
-    pub user_ordinal: u64,
-    pub assistant_ordinal: u64,
+    pub chat: Option<ChatCheckpoint>,
     pub observer: Arc<dyn ExecutionObserver>,
 }
 
 struct ExecutionAccumulator {
     snapshot: ExecutionSnapshot,
     input: String,
-    conversation_title: String,
-    user_ordinal: u64,
-    assistant_ordinal: u64,
+    chat: Option<ChatCheckpoint>,
     observer: Arc<dyn ExecutionObserver>,
     dirty_bytes: usize,
     last_ui_flush: Instant,
@@ -47,9 +45,7 @@ impl ExecutionAccumulator {
         ExecutionCheckpoint {
             snapshot: self.snapshot.clone(),
             input: self.input.clone(),
-            conversation_title: self.conversation_title.clone(),
-            user_ordinal: self.user_ordinal,
-            assistant_ordinal: self.assistant_ordinal,
+            chat: self.chat.clone(),
         }
     }
 }
@@ -73,6 +69,7 @@ impl ExecutionStore {
         let snapshot = ExecutionSnapshot {
             invocation_id: start.invocation_id.clone(),
             plugin_id: start.plugin_id,
+            action: start.action,
             plugin_generation: start.plugin_generation,
             conversation_id: start.conversation_id,
             user_message_id: start.user_message_id,
@@ -90,9 +87,7 @@ impl ExecutionStore {
         let accumulator = ExecutionAccumulator {
             snapshot: snapshot.clone(),
             input: start.input,
-            conversation_title: start.conversation_title,
-            user_ordinal: start.user_ordinal,
-            assistant_ordinal: start.assistant_ordinal,
+            chat: start.chat,
             observer: start.observer.clone(),
             dirty_bytes: 0,
             last_ui_flush: now.checked_sub(UI_FLUSH_INTERVAL).unwrap_or(now),
@@ -305,20 +300,22 @@ mod tests {
         let plugin = PluginId::parse("org.lexwisp.chat").expect("plugin ID");
         let action =
             QualifiedActionId::new(plugin.clone(), ActionId::parse("ask").expect("action ID"));
-        let _ = action;
         store.start(ExecutionStart {
             invocation_id: invocation_id.clone(),
             plugin_id: plugin,
+            action,
             plugin_generation: 1,
-            conversation_id: ConversationId::new(),
-            user_message_id: MessageId::new(),
-            assistant_message_id: MessageId::new(),
+            conversation_id: Some(ConversationId::new()),
+            user_message_id: Some(MessageId::new()),
+            assistant_message_id: Some(MessageId::new()),
             provider_id: ProviderId::parse("fixture").expect("provider ID"),
             model_id: "fixture".into(),
             input: "hello".into(),
-            conversation_title: "hello".into(),
-            user_ordinal: 0,
-            assistant_ordinal: 1,
+            chat: Some(ChatCheckpoint {
+                conversation_title: "hello".into(),
+                user_ordinal: 0,
+                assistant_ordinal: 1,
+            }),
             observer: Arc::new(Sink),
         });
         (owner, store, invocation_id)

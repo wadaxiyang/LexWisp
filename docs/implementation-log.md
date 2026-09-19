@@ -243,3 +243,62 @@ The Computer Use connector returned no native application surfaces in this sessi
 Runnable directory: `dist/stage-02/`. Archive: `dist/LexWisp-stage-02-windows-x64.zip`, with adjacent checksum. Package contents are explicitly allowlisted and contain no settings, database, logs, caches, or credentials. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
 
 Pending Stage 2 acceptance: configure a user-authorized real compatible endpoint through Control Center, complete one streamed answer, manually stop a long answer, hide/reopen Quick Shell during the request, inspect the persisted rows, verify the key is absent from TOML/log output, and capture the native UI evidence. Windows 10, clean-machine portability, alternate IMEs, DPI/multi-monitor layouts, prolonged resource trends, GPU memory, and provider-specific redirect/proxy behavior remain later/manual gates.
+
+## Stage 3 — 2026-09-19
+
+Status: **implemented and packaged; locked build/test/static quality gates, the native hotkey fixture, staged Release launch, single-instance wake, and schema-2 creation passed. Native selection/replace interaction against Notepad and a browser/editor, IME/menu dismissal interaction, and a live-provider Translate/Polish result remain pending because the Windows Computer Use surface returned no applications and no user-authorized compatible provider was available.** Those missing manual gates are not represented as complete.
+
+### Delivered daily-use path
+
+- Added `LaunchMode` with the exact `action_palette`, `translate_selection`, and `default_action` settings. The pure route test covers every mode with and without a verified selection. Invalid or absent automatic actions fall back to the action entry with a visible reason; no-input routes to manual Quick Ask and never starts a model request.
+- Added a dedicated `lexwisp-uia-mta` COM MTA worker. The Windows shell captures the foreground HWND/process/title before the GPUI window is shown, asks UI Automation for the focused text selection, rejects password controls, and returns only an authorized DTO plus an opaque 60-second replacement token. COM elements never leave their owning thread.
+- Added a bounded 800-ms capture wait. A blocked cross-process UIA item pauses later automatic capture rather than spawning replacement workers. Ordinary clipboard read/write stays available independently if UIA is blocked.
+- Added restricted Ctrl+C fallback. It first snapshots every clipboard format that can be safely copied as movable global memory, refuses known handle-based formats, waits for shortcut modifiers to release, rechecks the foreground target, detects a new clipboard sequence, reads only new Unicode text, and restores the prior formats only if no competing writer changed the clipboard. Because the sequence cannot prove source selection, fallback text is always a candidate requiring a user click.
+- Added manual replacement behind an explicit result button. The platform worker rechecks token age, HWND existence, process identity, the retained UIA element, and the exact still-selected text before activating the original window and issuing paste. It never uses `ValuePattern.SetValue`, never substitutes the whole field, never elevates, invalidates a successful token, and copies the result instead when validation fails. Successful replacement intentionally leaves the result on the clipboard.
+- Added generic manifest parsing and Prompt execution for the compiled Translate and Polish packages. Their IDs, names, allowed sources, parameters, Fast profile, cancel default, and output actions come from `manifest.toml`; prompt files use only declared `{{params.*}}` replacement. The actual input remains a separate user message. Unknown variables, parameters, kinds, sources, or required values fail before the request.
+- Translate and Polish use the same scoped `TextRunPort`, `InvocationSupervisor`, `AiService`, `ExecutionStore`, checkpoint projector, Provider resolution, cancellation, and bounded streaming path as Chat. Host contains no Translate/Polish ID branches and no second HTTP/SSE/persistence implementation.
+- Replaced the Chat-only popup composition with one GPUI Kit Quick Shell containing the action palette, verified/candidate/explicit-clipboard source preview, manifest-driven text/enum/boolean/number parameter controls, manual composer, selectable streaming result, Stop, Copy, Favorite, and safe Replace. Stateful Kit inputs and subscriptions are created once; side effects start from intent callbacks rather than render.
+- Added explicit clipboard input only for actions whose manifest allows it. Failed selection never reads or uploads the previous clipboard implicitly.
+- Added generic per-action `cancel`/`continue` overrides to versioned TOML and Control Center. Chat still continues when hidden. Declarative controllers cancel on the actual Surface detach by default; menu/dialog/IME focus changes do not call the hide path.
+- Extended SQLite to schema 2 with `action_executions` and `favorites`. Non-Chat actions persist input/output/partial/terminal state directly without fake Chat rows. Favorite toggling is real and survives in SQLite. A newer schema is now rejected before any schema or status write.
+
+### Commands and automated evidence
+
+The following final commands passed on native Windows x64:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **29 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real-hotkey fixture passed.
+- New coverage proves all six launch-mode/input-presence route combinations, strict manifest decoding, known-variable-only prompt expansion, direct non-Chat execution persistence, favorite persistence, settings round-trip for launch/default/dismiss values, sequence protection, and rejection of a schema-99 database without creating Stage 3 tables.
+- Existing fragmented SSE, truncated stream/partial result, HTTP error, cancellation, Chat stable-ID, checkpoint coalescing, credential/settings, and QuickJS probes remain green.
+
+### Staged Release smoke and artifacts
+
+Launched `C:\123\CODE\LexWisp\dist\stage-03\LexWisp.exe` from the actual packaged staging directory. First launch exposed a responsive native `LexWisp · Settings` window. A second process exited with code 0 and changed the original process's visible window to `LexWisp · Quick Shell`, proving the existing single-instance wake path still works with the Stage 3 composition. The staged portable data directory created `lexwisp.db`, WAL, and SHM; `sqlite3` reported `schema_version = 2` and the six expected tables: `conversations`, `messages`, `executions`, `action_executions`, `favorites`, and `schema_version`. The smoke process was then forcibly stopped because native UI control was unavailable; this is not claimed as a fresh explicit-quit test.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500; 34,132,275,200 bytes RAM; 96 DPI |
+| First Settings window | Working set 70,836,224 bytes; Private Bytes 82,165,760; 576 handles; 53 threads; responsive |
+| Release executable | 31,917,568 bytes; SHA-256 `ec1917b65134fc13223c90f416f115a5dcd0ce313a9e8671f51a5a41bb5c4e6a` |
+| Release ZIP | 12,402,145 bytes; SHA-256 `8b5510e8c02e3b915fb97f7861ea62f91ab15b46c3688a6086c1bb8c02177902` |
+
+Runnable directory: `dist/stage-03/`. Archive: `dist/LexWisp-stage-03-windows-x64.zip`, with adjacent checksum. The ZIP allowlist contains only the executable, app-local VC runtime, `portable.flag`, README, and generated notices; it contains no settings, database, logs, caches, or credentials. The staged directory's `data` files were generated only by the smoke run and are not in the ZIP.
+
+### Pending native acceptance
+
+The `computer-use` skill was initialized twice as prescribed, including one reset/retry, but both inventories returned no native applications and a `nodeRepl.fetch request failed` error. Therefore the following specification gates remain pending and must be replayed on an interactive desktop with working native control and a user-authorized Provider:
+
+- select text in Notepad and one common browser/editor, exercise all three launch modes with and without selection, confirm candidate fallback, and record unsupported targets;
+- run real Translate and Polish streams, Stop with a partial result, Copy, Favorite, hide-to-cancel and the configured continue override;
+- open Kit menus/dialogs and a Chinese IME candidate window during generation and prove none is treated as Surface dismissal;
+- replace a still-valid Notepad selection, then switch/change/expire the original target and prove LexWisp copies without writing to the wrong application;
+- verify target applications at different integrity levels, complex multi-format clipboard contents, Windows 10, alternative IMEs, multi-monitor/DPI coordinates, resource trends, GPU memory, and clean-machine portability at their later acceptance gates.

@@ -105,7 +105,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use lexwisp_core::{FileWriteError, GlobalHotkey};
+    use lexwisp_core::{DismissPolicy, FileWriteError, GlobalHotkey, LaunchMode};
 
     use super::*;
 
@@ -146,7 +146,13 @@ mod tests {
         let expected = AppSettings::default()
             .with_hotkey(GlobalHotkey::AltShiftSpace)
             .with_launch_at_startup(true)
-            .with_popup_retention_seconds(0);
+            .with_popup_retention_seconds(0)
+            .with_launch_mode(LaunchMode::DefaultAction)
+            .with_default_action_id(Some("org.lexwisp.polish/polish".into()))
+            .with_dismiss_override(
+                "org.lexwisp.translate/translate",
+                Some(DismissPolicy::Continue),
+            );
         store.save(&expected).expect("settings should save");
 
         let loaded = store.load().expect("settings should load");

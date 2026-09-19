@@ -33,6 +33,14 @@ enum StorageCommand {
         checkpoint: Box<ExecutionCheckpoint>,
         receipt: Option<mpsc::Sender<Result<(), StorageError>>>,
     },
+    ToggleFavorite {
+        invocation_id: String,
+        reply: mpsc::Sender<Result<bool, StorageError>>,
+    },
+    ContainsFavorite {
+        invocation_id: String,
+        reply: mpsc::Sender<Result<bool, StorageError>>,
+    },
     Shutdown,
 }
 
@@ -82,6 +90,28 @@ impl ContentStore {
 
     pub fn enqueued_checkpoints(&self) -> u64 {
         self.enqueued_checkpoints.load(Ordering::Relaxed)
+    }
+
+    pub fn toggle_favorite(&self, invocation_id: &str) -> Result<bool, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::ToggleFavorite {
+                invocation_id: invocation_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn contains_favorite(&self, invocation_id: &str) -> Result<bool, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::ContainsFavorite {
+                invocation_id: invocation_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
     }
 }
 
@@ -148,6 +178,18 @@ fn worker_main(
                     let _ = receipt.send(result);
                 }
             }
+            StorageCommand::ToggleFavorite {
+                invocation_id,
+                reply,
+            } => {
+                let _ = reply.send(toggle_favorite(&mut connection, &invocation_id));
+            }
+            StorageCommand::ContainsFavorite {
+                invocation_id,
+                reply,
+            } => {
+                let _ = reply.send(contains_favorite(&connection, &invocation_id));
+            }
             StorageCommand::Shutdown => break,
         }
     }
@@ -159,10 +201,37 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
     }
     let connection = Connection::open(path).map_err(sql_error)?;
     connection
+        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+        .map_err(sql_error)?;
+    let has_schema: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    let existing_version = if has_schema {
+        Some(
+            connection
+                .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(sql_error)?,
+        )
+    } else {
+        None
+    };
+    if let Some(version) = existing_version
+        && version != 1
+        && version != 2
+    {
+        return Err(StorageError::Start(format!(
+            "database schema version {version} is not supported"
+        )));
+    }
+    connection
         .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;
-             CREATE TABLE IF NOT EXISTS schema_version (
+            "CREATE TABLE IF NOT EXISTS schema_version (
                  version INTEGER NOT NULL
              );
              INSERT INTO schema_version(version)
@@ -206,21 +275,40 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  ON messages(conversation_id, ordinal);
              CREATE INDEX IF NOT EXISTS executions_conversation_updated
                  ON executions(conversation_id, updated_at_ms DESC);
+             CREATE TABLE IF NOT EXISTS action_executions (
+                 id TEXT PRIMARY KEY,
+                 plugin_id TEXT NOT NULL,
+                 action_id TEXT NOT NULL,
+                 plugin_generation INTEGER NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 model_id TEXT NOT NULL,
+                 input TEXT NOT NULL,
+                 output TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 retention_generation INTEGER NOT NULL,
+                 error TEXT,
+                 started_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS action_executions_updated
+                 ON action_executions(updated_at_ms DESC);
+             CREATE TABLE IF NOT EXISTS favorites (
+                 invocation_id TEXT PRIMARY KEY,
+                 created_at_ms INTEGER NOT NULL
+             );
              UPDATE executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
+                 WHERE status IN ('queued', 'running', 'cancelling');
+             UPDATE action_executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
                  WHERE status IN ('queued', 'running', 'cancelling');
              UPDATE messages SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
                  WHERE status IN ('submitted', 'generating');",
         )
         .map_err(sql_error)?;
-    let version: i64 = connection
-        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .map_err(sql_error)?;
-    if version != 1 {
-        return Err(StorageError::Start(format!(
-            "database schema version {version} is not supported"
-        )));
+    if existing_version.unwrap_or(1) == 1 {
+        connection
+            .execute("UPDATE schema_version SET version = 2", [])
+            .map_err(sql_error)?;
     }
     Ok(connection)
 }
@@ -230,19 +318,76 @@ fn write_checkpoint(
     checkpoint: &ExecutionCheckpoint,
 ) -> Result<(), StorageError> {
     let snapshot = &checkpoint.snapshot;
-    let user_ordinal = sqlite_u64(checkpoint.user_ordinal, "user ordinal")?;
-    let assistant_ordinal = sqlite_u64(checkpoint.assistant_ordinal, "assistant ordinal")?;
     let plugin_generation = sqlite_u64(snapshot.plugin_generation, "plugin generation")?;
     let sequence = sqlite_u64(snapshot.sequence, "execution sequence")?;
     let retention_generation = sqlite_u64(snapshot.retention_generation, "retention generation")?;
     let now = now_ms();
     let transaction = connection.transaction().map_err(sql_error)?;
+    let Some(chat) = &checkpoint.chat else {
+        let started_at = transaction
+            .query_row(
+                "SELECT started_at_ms FROM action_executions WHERE id = ?1",
+                [snapshot.invocation_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .unwrap_or(now);
+        transaction
+            .execute(
+                "INSERT INTO action_executions(
+                     id, plugin_id, action_id, plugin_generation, provider_id, model_id,
+                     input, output, status, sequence, retention_generation, error,
+                     started_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(id) DO UPDATE SET
+                     output = excluded.output,
+                     status = excluded.status,
+                     sequence = excluded.sequence,
+                     error = excluded.error,
+                     updated_at_ms = excluded.updated_at_ms
+                 WHERE excluded.sequence > action_executions.sequence
+                   AND excluded.retention_generation = action_executions.retention_generation",
+                params![
+                    snapshot.invocation_id.as_str(),
+                    snapshot.plugin_id.as_str(),
+                    snapshot.action.to_string(),
+                    plugin_generation,
+                    snapshot.provider_id.as_str(),
+                    snapshot.model_id,
+                    checkpoint.input,
+                    snapshot.output,
+                    status_name(snapshot.status),
+                    sequence,
+                    retention_generation,
+                    snapshot.error,
+                    started_at,
+                    now,
+                ],
+            )
+            .map_err(sql_error)?;
+        return transaction.commit().map_err(sql_error);
+    };
+    let conversation_id = snapshot
+        .conversation_id
+        .as_ref()
+        .ok_or_else(|| StorageError::Sql("chat checkpoint has no conversation ID".into()))?;
+    let user_message_id = snapshot
+        .user_message_id
+        .as_ref()
+        .ok_or_else(|| StorageError::Sql("chat checkpoint has no user message ID".into()))?;
+    let assistant_message_id = snapshot
+        .assistant_message_id
+        .as_ref()
+        .ok_or_else(|| StorageError::Sql("chat checkpoint has no assistant message ID".into()))?;
+    let user_ordinal = sqlite_u64(chat.user_ordinal, "user ordinal")?;
+    let assistant_ordinal = sqlite_u64(chat.assistant_ordinal, "assistant ordinal")?;
     transaction
         .execute(
             "INSERT INTO conversations(id, title, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?3)
              ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at_ms = excluded.updated_at_ms",
-            params![snapshot.conversation_id.as_str(), checkpoint.conversation_title, now],
+            params![conversation_id.as_str(), chat.conversation_title, now],
         )
         .map_err(sql_error)?;
     transaction
@@ -253,8 +398,8 @@ fn write_checkpoint(
              ) VALUES (?1, ?2, 'user', ?3, ?4, 'submitted', NULL, 0, ?5, ?6)
              ON CONFLICT(id) DO NOTHING",
             params![
-                snapshot.user_message_id.as_str(),
-                snapshot.conversation_id.as_str(),
+                user_message_id.as_str(),
+                conversation_id.as_str(),
                 user_ordinal,
                 checkpoint.input,
                 retention_generation,
@@ -276,8 +421,8 @@ fn write_checkpoint(
              WHERE excluded.sequence > messages.sequence
                AND excluded.retention_generation = messages.retention_generation",
             params![
-                snapshot.assistant_message_id.as_str(),
-                snapshot.conversation_id.as_str(),
+                assistant_message_id.as_str(),
+                conversation_id.as_str(),
                 assistant_ordinal,
                 snapshot.output,
                 status_name(snapshot.status),
@@ -317,9 +462,9 @@ fn write_checkpoint(
                 plugin_generation,
                 snapshot.provider_id.as_str(),
                 snapshot.model_id,
-                snapshot.conversation_id.as_str(),
-                snapshot.user_message_id.as_str(),
-                snapshot.assistant_message_id.as_str(),
+                conversation_id.as_str(),
+                user_message_id.as_str(),
+                assistant_message_id.as_str(),
                 status_name(snapshot.status),
                 sequence,
                 retention_generation,
@@ -330,6 +475,60 @@ fn write_checkpoint(
         )
         .map_err(sql_error)?;
     transaction.commit().map_err(sql_error)
+}
+
+fn toggle_favorite(connection: &mut Connection, invocation_id: &str) -> Result<bool, StorageError> {
+    let transaction = connection.transaction().map_err(sql_error)?;
+    let exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM favorites WHERE invocation_id = ?1)",
+            [invocation_id],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if exists {
+        transaction
+            .execute(
+                "DELETE FROM favorites WHERE invocation_id = ?1",
+                [invocation_id],
+            )
+            .map_err(sql_error)?;
+    } else {
+        let execution_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM executions WHERE id = ?1
+                    UNION ALL
+                    SELECT 1 FROM action_executions WHERE id = ?1
+                 )",
+                [invocation_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if !execution_exists {
+            return Err(StorageError::Sql(
+                "cannot favorite an execution that has not been saved".into(),
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO favorites(invocation_id, created_at_ms) VALUES (?1, ?2)",
+                params![invocation_id, now_ms()],
+            )
+            .map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)?;
+    Ok(!exists)
+}
+
+fn contains_favorite(connection: &Connection, invocation_id: &str) -> Result<bool, StorageError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM favorites WHERE invocation_id = ?1)",
+            [invocation_id],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
 }
 
 fn status_name(status: ExecutionStatus) -> &'static str {
@@ -368,8 +567,8 @@ mod tests {
     use std::{fs, sync::atomic::AtomicU64};
 
     use lexwisp_core::{
-        ConversationId, ExecutionSnapshot, InvocationId, MessageId, PluginId, ProviderId,
-        StorageState,
+        ActionId, ChatCheckpoint, ConversationId, ExecutionSnapshot, InvocationId, MessageId,
+        PluginId, ProviderId, QualifiedActionId, StorageState,
     };
 
     use super::*;
@@ -388,14 +587,19 @@ mod tests {
     }
 
     fn checkpoint(sequence: u64, output: &str, status: ExecutionStatus) -> ExecutionCheckpoint {
+        let plugin_id = PluginId::parse("org.lexwisp.chat").expect("valid plugin ID");
         ExecutionCheckpoint {
             snapshot: ExecutionSnapshot {
                 invocation_id: InvocationId::new(),
-                plugin_id: PluginId::parse("org.lexwisp.chat").expect("valid plugin ID"),
+                plugin_id: plugin_id.clone(),
+                action: QualifiedActionId::new(
+                    plugin_id,
+                    ActionId::parse("ask").expect("action ID"),
+                ),
                 plugin_generation: 1,
-                conversation_id: ConversationId::new(),
-                user_message_id: MessageId::new(),
-                assistant_message_id: MessageId::new(),
+                conversation_id: Some(ConversationId::new()),
+                user_message_id: Some(MessageId::new()),
+                assistant_message_id: Some(MessageId::new()),
                 provider_id: ProviderId::parse("default").expect("valid provider ID"),
                 model_id: "fixture".into(),
                 sequence,
@@ -407,9 +611,11 @@ mod tests {
                 retention_generation: 0,
             },
             input: "hello".into(),
-            conversation_title: "hello".into(),
-            user_ordinal: 0,
-            assistant_ordinal: 1,
+            chat: Some(ChatCheckpoint {
+                conversation_title: "hello".into(),
+                user_ordinal: 0,
+                assistant_ordinal: 1,
+            }),
         }
     }
 
@@ -435,12 +641,100 @@ mod tests {
         let (content, status): (String, String) = connection
             .query_row(
                 "SELECT content, status FROM messages WHERE id = ?1",
-                [terminal.snapshot.assistant_message_id.as_str()],
+                [terminal
+                    .snapshot
+                    .assistant_message_id
+                    .as_ref()
+                    .expect("assistant ID")
+                    .as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("assistant message exists");
         assert_eq!(content, "complete");
         assert_eq!(status, "completed");
+        drop(connection);
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn text_execution_and_favorite_are_persisted_without_chat_rows() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let mut text = checkpoint(2, "translated", ExecutionStatus::Completed);
+        text.snapshot.action = QualifiedActionId::new(
+            PluginId::parse("org.lexwisp.translate").expect("plugin ID"),
+            ActionId::parse("translate").expect("action ID"),
+        );
+        text.snapshot.plugin_id = text.snapshot.action.plugin_id().clone();
+        text.snapshot.conversation_id = None;
+        text.snapshot.user_message_id = None;
+        text.snapshot.assistant_message_id = None;
+        text.chat = None;
+        let invocation = text.snapshot.invocation_id.clone();
+        store
+            .enqueue(text, true)
+            .expect("terminal enqueues")
+            .expect("terminal receipt")
+            .wait()
+            .expect("text execution persists");
+        assert!(
+            store
+                .toggle_favorite(invocation.as_str())
+                .expect("favorite toggles")
+        );
+        assert!(
+            store
+                .contains_favorite(invocation.as_str())
+                .expect("favorite can be read")
+        );
+        owner.shutdown();
+
+        let connection = Connection::open(&path).expect("database opens");
+        let (input, output): (String, String) = connection
+            .query_row(
+                "SELECT input, output FROM action_executions WHERE id = ?1",
+                [invocation.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("action execution exists");
+        assert_eq!(input, "hello");
+        assert_eq!(output, "translated");
+        drop(connection);
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn newer_database_is_rejected_before_schema_changes() {
+        let path = test_path();
+        fs::create_dir_all(path.parent().expect("database parent")).expect("parent exists");
+        let connection = Connection::open(&path).expect("fixture database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES (99);",
+            )
+            .expect("fixture schema is created");
+        drop(connection);
+
+        assert!(matches!(
+            ContentStoreOwner::start(path.clone()),
+            Err(StorageError::Start(_))
+        ));
+        let connection = Connection::open(&path).expect("fixture database reopens");
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .expect("version remains");
+        let action_table: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'action_executions')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog query works");
+        assert_eq!(version, 99);
+        assert!(!action_table);
         drop(connection);
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");

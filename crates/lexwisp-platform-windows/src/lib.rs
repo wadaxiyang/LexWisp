@@ -1,10 +1,12 @@
 mod atomic_file;
+mod context;
 mod credential;
 mod shell;
 mod single_instance;
 mod window;
 
 pub use atomic_file::WindowsAtomicFileWriter;
+pub use context::{WindowsContextHandle, WindowsContextService};
 pub use credential::WindowsCredentialStore;
 pub use shell::{PlatformError, WindowsShell, WindowsShellHandle};
 pub use single_instance::{SingleInstance, SingleInstanceGuard};

@@ -2,7 +2,10 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use thiserror::Error;
 
-use crate::{ConversationId, ExecutionObserver, InvocationId, MessageId, QualifiedActionId};
+use crate::{
+    ConversationId, DeclarativeActionDefinition, ExecutionObserver, InvocationId, MessageId,
+    QualifiedActionId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AiRole {
@@ -48,6 +51,26 @@ pub trait ChatRunPort: Send + Sync {
         request: ChatInvocationRequest,
         observer: Arc<dyn ExecutionObserver>,
     ) -> ChatRunFuture<'_>;
+
+    fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct TextInvocationRequest {
+    pub action: QualifiedActionId,
+    pub definition: DeclarativeActionDefinition,
+    pub input: String,
+    pub parameters: std::collections::BTreeMap<String, String>,
+}
+
+pub type TextRunFuture<'a> = ChatRunFuture<'a>;
+
+pub trait TextRunPort: Send + Sync {
+    fn run(
+        &self,
+        request: TextInvocationRequest,
+        observer: Arc<dyn ExecutionObserver>,
+    ) -> TextRunFuture<'_>;
 
     fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError>;
 }

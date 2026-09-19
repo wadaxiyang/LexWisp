@@ -1,4 +1,4 @@
-use std::{fmt, future::Future, pin::Pin, str::FromStr};
+use std::{collections::BTreeMap, fmt, future::Future, pin::Pin, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,6 +87,20 @@ pub struct QualifiedActionId {
     action_id: ActionId,
 }
 
+impl FromStr for QualifiedActionId {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (plugin, action) = value
+            .split_once('/')
+            .ok_or_else(|| format!("'{value}' is not a qualified action ID"))?;
+        Ok(Self::new(
+            PluginId::parse(plugin).map_err(|error| error.to_string())?,
+            ActionId::parse(action).map_err(|error| error.to_string())?,
+        ))
+    }
+}
+
 impl QualifiedActionId {
     pub const fn new(plugin_id: PluginId, action_id: ActionId) -> Self {
         Self {
@@ -159,6 +173,54 @@ pub struct ActionDescriptor {
     plugin_id: PluginId,
     id: ActionId,
     display_name: String,
+    kind: ActionKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActionKind {
+    Native,
+    Declarative(DeclarativeActionDefinition),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterKind {
+    Text,
+    Enum,
+    Boolean,
+    Number,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActionParameter {
+    pub key: String,
+    pub label: String,
+    pub kind: ParameterKind,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub choices: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActionOutputPolicy {
+    pub allow_copy: bool,
+    pub allow_favorite: bool,
+    pub allow_replace: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclarativeActionDefinition {
+    pub prompt: String,
+    pub parameters: Vec<ActionParameter>,
+    pub allowed_sources: Vec<ActionInputSource>,
+    pub dismiss_policy: crate::DismissPolicy,
+    pub output: ActionOutputPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionInputSource {
+    Selection,
+    Manual,
+    Clipboard,
 }
 
 impl ActionDescriptor {
@@ -167,6 +229,21 @@ impl ActionDescriptor {
             plugin_id,
             id,
             display_name: display_name.into(),
+            kind: ActionKind::Native,
+        }
+    }
+
+    pub fn declarative(
+        plugin_id: PluginId,
+        id: ActionId,
+        display_name: impl Into<String>,
+        definition: DeclarativeActionDefinition,
+    ) -> Self {
+        Self {
+            plugin_id,
+            id,
+            display_name: display_name.into(),
+            kind: ActionKind::Declarative(definition),
         }
     }
 
@@ -181,11 +258,33 @@ impl ActionDescriptor {
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
+
+    pub const fn kind(&self) -> &ActionKind {
+        &self.kind
+    }
+
+    pub fn qualified_id(&self) -> QualifiedActionId {
+        QualifiedActionId::new(self.plugin_id.clone(), self.id.clone())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionRequest {
     pub input: String,
+    pub source: crate::InputSource,
+    pub parameters: BTreeMap<String, String>,
+    pub context_token: Option<crate::ContextToken>,
+}
+
+impl ActionRequest {
+    pub fn manual(input: impl Into<String>) -> Self {
+        Self {
+            input: input.into(),
+            source: crate::InputSource::Manual,
+            parameters: BTreeMap::new(),
+            context_token: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

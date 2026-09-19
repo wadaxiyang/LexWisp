@@ -11,6 +11,7 @@ lexwisp-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 windows-sys.workspace = true
+windows.workspace = true
 
 [lints]
 workspace = true

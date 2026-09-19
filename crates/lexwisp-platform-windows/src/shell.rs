@@ -41,6 +41,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::WindowsContextHandle;
+
 pub const MESSAGE_WINDOW_CLASS: &str = "LexWisp.MessageWindow.v1";
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_COMMAND_QUEUE: u32 = WM_APP + 2;
@@ -81,6 +83,7 @@ enum ThreadCommand {
 
 struct ThreadState {
     ui_commands: Sender<HostUiCommand>,
+    context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
     hotkey_id: Option<i32>,
     hotkey: Option<GlobalHotkey>,
@@ -148,12 +151,13 @@ impl WindowsShell {
     pub fn start(
         hotkey: GlobalHotkey,
         ui_commands: Sender<HostUiCommand>,
+        context: WindowsContextHandle,
     ) -> Result<Self, PlatformError> {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("lexwisp-windows-shell".into())
-            .spawn(move || shell_thread(hotkey, ui_commands, commands_rx, ready_tx))
+            .spawn(move || shell_thread(hotkey, ui_commands, context, commands_rx, ready_tx))
             .map_err(|error| PlatformError::Unavailable(error.to_string()))?;
         let ready = ready_rx.recv().map_err(|_| {
             PlatformError::Unavailable("the Windows shell exited during startup".into())
@@ -227,6 +231,7 @@ fn unsafe_post(window: isize, message: u32) -> i32 {
 fn shell_thread(
     hotkey: GlobalHotkey,
     ui_commands: Sender<HostUiCommand>,
+    context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
     ready: mpsc::SyncSender<Result<(isize, Option<String>), PlatformError>>,
 ) {
@@ -309,6 +314,7 @@ fn shell_thread(
         let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
         let mut state = Box::new(ThreadState {
             ui_commands,
+            context,
             commands,
             hotkey_id: initial_hotkey_error.is_none().then_some(HOTKEY_PRIMARY),
             hotkey: initial_hotkey_error.is_none().then_some(hotkey),
@@ -356,7 +362,10 @@ unsafe extern "system" fn window_proc(
         }
         match message {
             WM_HOTKEY => {
-                let _ = state.ui_commands.try_send(HostUiCommand::ToggleQuickShell);
+                let snapshot = state.context.capture_foreground_blocking();
+                let _ = state
+                    .ui_commands
+                    .try_send(HostUiCommand::ToggleQuickShell(snapshot));
                 return 0;
             }
             WM_LEXWISP_WAKE => {
@@ -581,8 +590,10 @@ mod tests {
         let _conflict = ThreadHotkey(CONFLICT_ID);
 
         let (ui_commands, _receiver) = async_channel::bounded(4);
-        let shell = WindowsShell::start(GlobalHotkey::ControlAltSpace, ui_commands)
-            .expect("the Windows shell should start");
+        let context = crate::WindowsContextService::start().expect("context worker should start");
+        let shell =
+            WindowsShell::start(GlobalHotkey::ControlAltSpace, ui_commands, context.handle())
+                .expect("the Windows shell should start");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -609,6 +620,7 @@ mod tests {
             unsafe { UnregisterHotKey(ptr::null_mut(), PROBE_ID) };
         }
         shell.shutdown();
+        context.shutdown();
         assert!(
             !previous_was_released,
             "the old shortcut must remain active"

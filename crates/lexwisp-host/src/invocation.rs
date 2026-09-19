@@ -4,9 +4,10 @@ use std::{
 };
 
 use lexwisp_core::{
-    Capability, ChatInvocationRequest, ChatRunError, ChatRunFuture, ChatRunPort, CredentialStore,
-    ExecutionObserver, ExecutionSnapshot, ExecutionStatus, InvocationId, PluginId, ProviderError,
-    TaskOwner,
+    AiMessage, AiRole, Capability, ChatCheckpoint, ChatInvocationRequest, ChatRunError,
+    ChatRunFuture, ChatRunPort, CredentialStore, ExecutionObserver, ExecutionSnapshot,
+    ExecutionStatus, InvocationId, PluginId, ProviderError, QualifiedActionId, TaskOwner,
+    TextInvocationRequest, TextRunFuture, TextRunPort,
 };
 use tokio::sync::{Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -17,8 +18,18 @@ use crate::{
 };
 
 struct ActiveInvocation {
-    conversation_id: lexwisp_core::ConversationId,
+    conversation_id: Option<lexwisp_core::ConversationId>,
     cancellation: CancellationToken,
+}
+
+struct PreparedInvocation {
+    action: QualifiedActionId,
+    messages: Vec<AiMessage>,
+    input: String,
+    conversation_id: Option<lexwisp_core::ConversationId>,
+    user_message_id: Option<lexwisp_core::MessageId>,
+    assistant_message_id: Option<lexwisp_core::MessageId>,
+    chat: Option<ChatCheckpoint>,
 }
 
 pub struct InvocationSupervisor {
@@ -54,7 +65,7 @@ impl InvocationSupervisor {
         invocation_id: InvocationId,
         plugin_id: PluginId,
         plugin_generation: u64,
-        request: ChatInvocationRequest,
+        request: PreparedInvocation,
         observer: Arc<dyn ExecutionObserver>,
         scope: TaskScope,
     ) -> Result<ExecutionSnapshot, ChatRunError> {
@@ -67,9 +78,14 @@ impl InvocationSupervisor {
                 .active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if active
-                .values()
-                .any(|entry| entry.conversation_id == request.conversation_id)
+            if request
+                .conversation_id
+                .as_ref()
+                .is_some_and(|conversation| {
+                    active
+                        .values()
+                        .any(|entry| entry.conversation_id.as_ref() == Some(conversation))
+                })
             {
                 return Err(ChatRunError::ConversationBusy);
             }
@@ -106,7 +122,7 @@ impl InvocationSupervisor {
         invocation_id: InvocationId,
         plugin_id: PluginId,
         plugin_generation: u64,
-        request: ChatInvocationRequest,
+        request: PreparedInvocation,
         observer: Arc<dyn ExecutionObserver>,
         cancellation: CancellationToken,
         scope: TaskScope,
@@ -128,24 +144,18 @@ impl InvocationSupervisor {
         } else {
             None
         };
-        let input = request
-            .messages
-            .last()
-            .map(|message| message.content.clone())
-            .unwrap_or_default();
         self.executions.start(ExecutionStart {
             invocation_id: invocation_id.clone(),
-            plugin_id,
+            plugin_id: plugin_id.clone(),
+            action: request.action,
             plugin_generation,
             conversation_id: request.conversation_id,
             user_message_id: request.user_message_id,
             assistant_message_id: request.assistant_message_id,
             provider_id: provider.id().clone(),
             model_id: model_id.clone(),
-            input,
-            conversation_title: request.conversation_title,
-            user_ordinal: request.user_ordinal,
-            assistant_ordinal: request.assistant_ordinal,
+            input: request.input,
+            chat: request.chat,
             observer,
         });
 
@@ -307,13 +317,30 @@ impl ChatRunPort for ScopedChatRunPort {
             .scope(TaskOwner::Invocation(invocation_id.as_str().to_owned()));
         let task_scope = scope.clone();
         let (sender, receiver) = oneshot::channel();
+        let prepared = PreparedInvocation {
+            action: request.action,
+            messages: request.messages.clone(),
+            input: request
+                .messages
+                .last()
+                .map(|message| message.content.clone())
+                .unwrap_or_default(),
+            conversation_id: Some(request.conversation_id),
+            user_message_id: Some(request.user_message_id),
+            assistant_message_id: Some(request.assistant_message_id),
+            chat: Some(ChatCheckpoint {
+                conversation_title: request.conversation_title,
+                user_ordinal: request.user_ordinal,
+                assistant_ordinal: request.assistant_ordinal,
+            }),
+        };
         scope.spawn(async move {
             let result = supervisor
                 .execute(
                     invocation_id,
                     plugin_id,
                     plugin_generation,
-                    request,
+                    prepared,
                     observer,
                     task_scope,
                 )
@@ -325,5 +352,211 @@ impl ChatRunPort for ScopedChatRunPort {
 
     fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError> {
         self.supervisor.cancel(invocation_id)
+    }
+}
+
+pub struct ScopedTextRunPort {
+    plugin_id: PluginId,
+    actions: crate::ActionRegistry,
+    capabilities: CapabilityAuthority,
+    supervisor: Arc<InvocationSupervisor>,
+    tasks: HostTaskPort,
+}
+
+impl ScopedTextRunPort {
+    pub(crate) fn new(
+        plugin_id: PluginId,
+        actions: crate::ActionRegistry,
+        capabilities: CapabilityAuthority,
+        supervisor: Arc<InvocationSupervisor>,
+        tasks: HostTaskPort,
+    ) -> Self {
+        Self {
+            plugin_id,
+            actions,
+            capabilities,
+            supervisor,
+            tasks,
+        }
+    }
+}
+
+impl TextRunPort for ScopedTextRunPort {
+    fn run(
+        &self,
+        request: TextInvocationRequest,
+        observer: Arc<dyn ExecutionObserver>,
+    ) -> TextRunFuture<'_> {
+        let invalid_identity = request.action.plugin_id() != &self.plugin_id;
+        let authorized = self
+            .capabilities
+            .is_granted(&self.plugin_id, Capability::AiInvoke);
+        let registered = self.actions.contains(&request.action);
+        if invalid_identity || !authorized || !registered {
+            return Box::pin(async {
+                Err(ChatRunError::Failed(
+                    "plugin identity, registration, or AI capability is invalid".into(),
+                ))
+            });
+        }
+        let prompt = match render_prompt(&request.definition, &request.parameters) {
+            Ok(prompt) => prompt,
+            Err(error) => return Box::pin(async move { Err(ChatRunError::Failed(error)) }),
+        };
+        let invocation_id = InvocationId::new();
+        let plugin_id = self.plugin_id.clone();
+        let plugin_generation = self.actions.generation();
+        let supervisor = self.supervisor.clone();
+        let scope = self
+            .tasks
+            .scope(TaskOwner::Invocation(invocation_id.as_str().to_owned()));
+        let task_scope = scope.clone();
+        let prepared = PreparedInvocation {
+            action: request.action,
+            messages: vec![
+                AiMessage {
+                    role: AiRole::System,
+                    content: prompt,
+                },
+                AiMessage {
+                    role: AiRole::User,
+                    content: request.input.clone(),
+                },
+            ],
+            input: request.input,
+            conversation_id: None,
+            user_message_id: None,
+            assistant_message_id: None,
+            chat: None,
+        };
+        let (sender, receiver) = oneshot::channel();
+        scope.spawn(async move {
+            let result = supervisor
+                .execute(
+                    invocation_id,
+                    plugin_id,
+                    plugin_generation,
+                    prepared,
+                    observer,
+                    task_scope,
+                )
+                .await;
+            let _ = sender.send(result);
+        });
+        Box::pin(async move { receiver.await.unwrap_or(Err(ChatRunError::ShuttingDown)) })
+    }
+
+    fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError> {
+        self.supervisor.cancel(invocation_id)
+    }
+}
+
+fn render_prompt(
+    definition: &lexwisp_core::DeclarativeActionDefinition,
+    provided: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut values = std::collections::BTreeMap::new();
+    for parameter in &definition.parameters {
+        let value = provided
+            .get(&parameter.key)
+            .cloned()
+            .or_else(|| parameter.default_value.clone());
+        let Some(value) = value else {
+            if parameter.required {
+                return Err(format!(
+                    "required parameter '{}' is missing",
+                    parameter.label
+                ));
+            }
+            continue;
+        };
+        if value.len() > 256 {
+            return Err(format!("parameter '{}' is too long", parameter.label));
+        }
+        match parameter.kind {
+            lexwisp_core::ParameterKind::Enum
+                if !parameter.choices.iter().any(|choice| choice == &value) =>
+            {
+                return Err(format!(
+                    "parameter '{}' has an invalid value",
+                    parameter.label
+                ));
+            }
+            lexwisp_core::ParameterKind::Boolean if !matches!(value.as_str(), "true" | "false") => {
+                return Err(format!(
+                    "parameter '{}' must be true or false",
+                    parameter.label
+                ));
+            }
+            lexwisp_core::ParameterKind::Number if value.parse::<f64>().is_err() => {
+                return Err(format!("parameter '{}' must be a number", parameter.label));
+            }
+            _ => {}
+        }
+        values.insert(parameter.key.clone(), value);
+    }
+    if let Some(unknown) = provided.keys().find(|key| !values.contains_key(*key)) {
+        return Err(format!("unknown parameter '{unknown}'"));
+    }
+
+    let mut prompt = definition.prompt.clone();
+    while let Some(start) = prompt.find("{{") {
+        let end = prompt[start + 2..]
+            .find("}}")
+            .map(|offset| start + 2 + offset)
+            .ok_or_else(|| "prompt contains an unterminated template variable".to_string())?;
+        let token = prompt[start + 2..end].trim();
+        let key = token
+            .strip_prefix("params.")
+            .ok_or_else(|| format!("unknown template variable '{{{{{token}}}}}'"))?;
+        let value = values
+            .get(key)
+            .ok_or_else(|| format!("template parameter '{key}' is missing"))?;
+        prompt.replace_range(start..end + 2, value);
+    }
+    Ok(prompt)
+}
+
+#[cfg(test)]
+mod declarative_tests {
+    use std::collections::BTreeMap;
+
+    use lexwisp_core::{
+        ActionInputSource, ActionOutputPolicy, ActionParameter, DeclarativeActionDefinition,
+        DismissPolicy, ParameterKind,
+    };
+
+    use super::render_prompt;
+
+    fn definition() -> DeclarativeActionDefinition {
+        DeclarativeActionDefinition {
+            prompt: "Translate to {{params.language}}. Input stays user content.".into(),
+            parameters: vec![ActionParameter {
+                key: "language".into(),
+                label: "Language".into(),
+                kind: ParameterKind::Text,
+                required: true,
+                default_value: Some("简体中文".into()),
+                choices: Vec::new(),
+            }],
+            allowed_sources: vec![ActionInputSource::Manual],
+            dismiss_policy: DismissPolicy::Cancel,
+            output: ActionOutputPolicy {
+                allow_copy: true,
+                allow_favorite: true,
+                allow_replace: false,
+            },
+        }
+    }
+
+    #[test]
+    fn template_only_replaces_declared_parameters() {
+        assert_eq!(
+            render_prompt(&definition(), &BTreeMap::new()).expect("default renders"),
+            "Translate to 简体中文. Input stays user content."
+        );
+        let mut unknown = BTreeMap::new();
+        unknown.insert("other".into(), "value".into());
+        assert!(render_prompt(&definition(), &unknown).is_err());
     }
 }

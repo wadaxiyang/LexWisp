@@ -1,0 +1,34 @@
+schema_version = 1
+
+[plugin]
+id = "org.lexwisp.translate"
+name = "Translate"
+version = "0.1.0"
+kind = "declarative"
+host_api = "^1.0"
+
+[capabilities]
+required = ["ai.invoke"]
+optional = []
+
+[[actions]]
+id = "translate"
+name = "Translate text"
+input_kind = "text"
+allowed_sources = ["selection", "manual", "clipboard"]
+prompt = "prompt.md"
+model_profile = "Fast"
+dismiss_policy = "cancel"
+
+[[actions.parameters]]
+key = "target_language"
+label = "Target language"
+kind = "text"
+required = true
+default = "Simplified Chinese"
+
+[actions.output]
+format = "text"
+allow_copy = true
+allow_favorite = true
+allow_replace = true
