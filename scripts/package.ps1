@@ -7,11 +7,12 @@ try {
         cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
         if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     }
-    $stage = Join-Path $repo 'dist/stage-00'
+    $stage = Join-Path $repo 'dist/stage-01'
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     $binary = Join-Path $repo 'target/x86_64-pc-windows-msvc/release/LexWisp.exe'
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage 'LexWisp.exe') -Force
     Copy-Item -LiteralPath (Join-Path $repo 'README.md') -Destination (Join-Path $stage 'README.md') -Force
+    [IO.File]::WriteAllText((Join-Path $stage 'portable.flag'), '')
     # The verified PE imports VCRUNTIME140.dll. Use the developer redist, never System32.
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -24,7 +25,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot collect locked dependency notices.' }
     $metadata = $metadataJson | ConvertFrom-Json
     $notices = [Text.StringBuilder]::new()
-    [void]$notices.AppendLine('LexWisp Stage 0 - third-party notices')
+    [void]$notices.AppendLine('LexWisp Stage 1 - third-party notices')
     [void]$notices.AppendLine('Inventory includes build/test dependencies, not all of which ship. QuickJS is test-only. Package sources are unmodified; Windows fonts are not redistributed.')
     [void]$notices.AppendLine("Microsoft Visual C++ Runtime $redistVersion (vcruntime140.dll), Copyright Microsoft Corporation. App-local redistributable from Visual Studio Build Tools. Redistribution list: https://aka.ms/vs/18/redistribution")
     $texts = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
@@ -46,8 +47,8 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $stage 'THIRD-PARTY-NOTICES.txt'), $notices.ToString())
     # Explicit allowlist: never archive a directory that might contain user data.
-    $files = @('LexWisp.exe', 'vcruntime140.dll', 'README.md', 'THIRD-PARTY-NOTICES.txt') | ForEach-Object { Join-Path $stage $_ }
-    $archive = Join-Path $repo 'dist/LexWisp-stage-00-windows-x64.zip'
+    $files = @('LexWisp.exe', 'vcruntime140.dll', 'portable.flag', 'README.md', 'THIRD-PARTY-NOTICES.txt') | ForEach-Object { Join-Path $stage $_ }
+    $archive = Join-Path $repo 'dist/LexWisp-stage-01-windows-x64.zip'
     Compress-Archive -LiteralPath $files -DestinationPath $archive -Force
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii

@@ -1,24 +1,24 @@
 # LexWisp
 
-Windows 原生 AI 文本工具，采用 Rust + GPUI-Kit。目前交付 **Stage 0：原生窗口与依赖验证版**。
+LexWisp is a portable, native Windows text-tool shell built with Rust, GPUI, and GPUI Kit. The current deliverable is **Stage 1: Host core, system residency, and window lifecycle**.
 
-此版本仅在内存中预览原文，不联网、不调用 AI、不保存输入。Chat、翻译、润色、热键、托盘和设置将在后续阶段实现。
+Stage 1 deliberately contains no AI actions. It establishes the single-instance Host, notification-area icon, global shortcut, retained task ownership, native window registry, and persistent shell settings required by later stages.
 
-## 运行
+## Run
 
-解压 `LexWisp-stage-00-windows-x64.zip`，运行 `LexWisp.exe`。当前验证目标为 Windows 11 x64。图标嵌入程序，字体使用 Windows 系统字体。无开发工具的干净机器验证仍需独立进行，当前不承诺 Windows 10 支持。
+Extract `LexWisp-stage-01-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores `settings.toml` under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
-请保留同目录的 `vcruntime140.dll` 和第三方许可说明。运行库已随包提供，无需安装开发工具。
+- First launch opens Control Center. Choose a global shortcut, theme, launch-at-sign-in behavior, and Quick Shell retention, then choose **Save**.
+- The default shortcut is `Ctrl + Alt + Space`. The notification-area icon opens Quick Shell on left click and provides Quick Shell, Settings, and Exit commands on right click.
+- Closing or hiding Quick Shell keeps its native window warm for the configured interval (30 seconds by default), then destroys it. Closing every GUI window does not exit the resident process.
+- A second launch wakes the existing process instead of starting another copy.
+- Exit explicitly from Quick Shell or the notification-area menu.
 
-- 输入中文或英文，按 Enter 或“预览原文”提交。
-- Shift+Enter 换行；结果区只读，支持拖选和 Ctrl+C。
-- “切换主题”切换明暗；“关于验证”打开窗口级对话框，Escape 关闭。
-- “重建窗口”创建新窗口后销毁旧窗口，重置本阶段的临时内容。
-- “退出”或标题栏关闭按钮结束进程。Stage 0 没有后台常驻。
+If a shortcut is already owned by another application, LexWisp keeps the previous working shortcut and reports the conflict. Settings are versioned TOML and are replaced atomically; corrupt or newer settings are preserved and reported rather than reset.
 
-## 构建
+## Build
 
-开发机需要 Rustup、Visual Studio C++ Build Tools 和 Windows SDK（含资源编译器、FXC）。`rust-toolchain.toml` 固定 Rust 1.95.0；`Cargo.lock` 固定依赖。用户运行绿色包不需要这些构建工具。
+The development machine needs Rustup, Visual Studio C++ Build Tools, and the Windows SDK. `rust-toolchain.toml` pins Rust 1.95.0 and `Cargo.lock` freezes dependencies. End users do not need Rust, Node.js, or developer tools.
 
 ```powershell
 cargo fmt --all -- --check
@@ -28,6 +28,6 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 ./scripts/package.ps1
 ```
 
-QuickJS 的普通求值、死循环中断与内存上限探针保留在 `crates/lexwisp-app/tests/quickjs_probe.rs`，不会打包成工具或加入产品启动过程。
+The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no VM or probe tool ships in Stage 1.
 
-设计见 [SPEC](LexWisp_SPEC.md) 与 [扩展规范](LexWisp_SPEC_EXTEND.md)。实际验证结果及待验收项见 [实施记录](docs/implementation-log.md)。
+See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.

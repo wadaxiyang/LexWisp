@@ -1,14 +1,16 @@
 [package]
-name = "lexwisp-ui"
+name = "lexwisp-platform-windows"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-anyhow.workspace = true
-gpui-kit.workspace = true
+async-channel.workspace = true
 lexwisp-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+windows-sys.workspace = true
 
 [lints]
 workspace = true

@@ -3633,10 +3633,55 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 name = "lexwisp-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui-kit",
+ "lexwisp-core",
+ "lexwisp-host",
+ "lexwisp-platform-windows",
+ "lexwisp-storage",
  "lexwisp-ui",
+ "raw-window-handle",
  "rquickjs",
+]
+
+[[package]]
+name = "lexwisp-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "lexwisp-host"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "lexwisp-core",
+ "lexwisp-platform-windows",
+ "lexwisp-storage",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "lexwisp-platform-windows"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "lexwisp-core",
+ "thiserror 2.0.20",
+ "tokio",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "lexwisp-storage"
+version = "0.1.0"
+dependencies = [
+ "lexwisp-core",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -3645,6 +3690,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
+ "lexwisp-core",
 ]
 
 [[package]]

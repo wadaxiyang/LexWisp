@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/lexwisp-app", "crates/lexwisp-ui"]
+members = [
+    "crates/lexwisp-app",
+    "crates/lexwisp-core",
+    "crates/lexwisp-host",
+    "crates/lexwisp-platform-windows",
+    "crates/lexwisp-storage",
+    "crates/lexwisp-ui",
+]
 resolver = "3"
 
 [workspace.package]
@@ -10,10 +17,32 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "=1.0.102"
+async-channel = "=2.5.0"
 gpui-kit = "=0.6.1"
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+lexwisp-core = { path = "crates/lexwisp-core" }
+lexwisp-host = { path = "crates/lexwisp-host" }
+lexwisp-platform-windows = { path = "crates/lexwisp-platform-windows" }
+lexwisp-storage = { path = "crates/lexwisp-storage" }
 lexwisp-ui = { path = "crates/lexwisp-ui" }
-windows-sys = { version = "=0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+raw-window-handle = "=0.6.2"
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.20"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "sync", "time"] }
+tokio-util = "=0.7.19"
+toml = "=0.8.23"
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

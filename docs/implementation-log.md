@@ -117,3 +117,76 @@ Memory was sampled with `Get-Process` while the window was visible, with no netw
 - The rebuilt staged executable is 22,809,600 bytes and the ZIP is 8,477,326 bytes. The artifact hashes above now describe this rebuilt output.
 - Launched the rebuilt executable from `C:\123\CODE\LexWisp\dist\stage-00\LexWisp.exe`. The process exposed a nonzero main window handle titled `LexWisp · Stage 0`, reported responsive, loaded from the staged path, and exited within 10 seconds after its main window was closed; final process count was zero. Snapshot at launch: working set 66,568,192 bytes, Private Bytes 81,059,840, 561 handles, 47 threads.
 - The Windows computer-use connector returned no native application inventory in this session and its native app methods were disabled, so the earlier full input/IME/selection/overlay native acceptance was not represented as newly rerun. The current changes do not alter those interaction paths; current compile, test, package, launch, responsive-window, and clean-exit gates passed. A fresh screenshot/keyboard smoke run remains desirable when native UI automation is available, but it does not invalidate the previously recorded Stage 0 acceptance.
+
+## Stage 1 — 2026-09-19
+
+Status: **implemented; Release build, packaging, and the required start → no-window residency → global-hotkey recovery → explicit exit sequence passed on Windows**. Stage 1 is a system shell and contains no AI product action.
+
+### Delivered boundaries
+
+- Added real `lexwisp-core`, `lexwisp-platform-windows`, `lexwisp-storage`, and `lexwisp-host` crates with the dependency direction defined by the specifications. `core` remains free of GPUI, Win32, SQLite, HTTP, and concrete plugins.
+- `core` provides stable plugin/action identifiers, object-safe action execution, typed settings/errors, capability names, task owners, surface commands, and the atomic-file port.
+- `host` owns one two-worker Tokio business runtime, `HostTaskPort`/owned `TaskScope`s with cancellation and retained handles, typed `HostHandles`, the settings service, plugin/action registries, bounded lifecycle notifications, and `CapabilityAuthority`. Package registration validates the complete package before commit; removal detaches only that package and its actions.
+- `platform-windows` owns the single-instance mutex/wake message, notification-area icon and real menu commands, replacement-before-release global hotkeys, `TaskbarCreated` restoration, current-user startup registration, message-only window/thread, two-second bounded shell shutdown, Win32 show/hide, startup diagnostics, and atomic settings replacement. Unsafe blocks include local ownership/thread/lifetime comments.
+- `storage` owns versioned TOML discovery, validation, load, and save. The packaged `portable.flag` selects executable-adjacent `data`; without it the path is `%LOCALAPPDATA%/LexWisp`. Missing configuration is first-run; corrupt/newer configuration is reported and left untouched.
+- `ui` uses the locked GPUI Kit 0.6.1 family and its Root, Radio, Switch, Button, theme, and overlay composition. `SurfaceFactory`/`SurfaceController` owns a real `WindowRegistry`; Quick Shell implements Visible/HiddenWarm/Destroyed with generation checks and configurable 0/30/60-second retention. Window destruction is queued after controller borrowing ends, preventing a reentrant GPUI window-table update. Control Center persists only real hotkey/theme/startup/retention settings.
+- `app` is the composition root and retains the bounded async `HostUiCommand` bridge, window-close observer, quit observer, SurfaceFactory entity, Host, Windows shell, and instance guard. Closing all GUI windows does not create or retain a hidden GPUI keeper window and does not exit; explicit quit shuts down Host before the Windows shell.
+- `scripts/package.ps1` remains the single packaging script. Stage 1 archives only `LexWisp.exe`, app-local `vcruntime140.dll`, `portable.flag`, README, and generated notices.
+
+### Defects found by native acceptance
+
+1. The first implementation destroyed a hidden Quick Shell by nesting `WindowHandle::update` inside an active `SurfaceController` update. The Release process terminated with `0xc0000409` when the retention timer expired. Destruction is now two-phase: the generation-checked registry entry is taken first, then GPUI window removal is deferred to the next effect cycle after the controller borrow ends. Both immediate destruction and timed destruction subsequently kept the same resident process alive.
+2. The first repeated settings save called `ReplaceFileW` while the temporary file handle was still open and also requested a persistent backup name. The second save failed. The writer now syncs and closes the temporary handle before a backup-free atomic replacement; a Windows regression writes and replaces the same file twice.
+
+### Commands and automated results
+
+The following final commands passed on native Windows:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **13 passed, 0 failed, 1 native fixture ignored by default**. This includes plugin-ID/action-ID/settings validation, atomic package registration, wrong-owner rejection, package removal, missing/corrupt/round-trip TOML, repeated Win32 atomic replacement, and both QuickJS probes.
+- The separately invoked native hotkey fixture passed: it occupied `Ctrl+Shift+Space`, confirmed replacement registration failed, then proved `Ctrl+Alt+Space` remained registered. It also starts and cleanly shuts down the actual notification-area/message-thread shell.
+- Workspace format, locked check, and all-target Clippy with warnings denied passed. Release compiled and linked successfully with panic unwind unchanged.
+
+### Native packaged Release acceptance
+
+The final Release was launched from `C:\123\CODE\LexWisp\dist\stage-01\LexWisp.exe`; Computer Use controlled the actual GPUI windows and captured their rendered state/accessibility controls.
+
+| Action | Observed result |
+| --- | --- |
+| First run | Control Center opened with the three hotkeys, system/light/dark themes, startup Switch, 0/30/60-second retention, and one real Save action |
+| Default save | Saved successfully and displayed settings generation 1; `data/settings.toml` contained schema 1 and the selected values |
+| Subsequent launch | Process ID 296 was responsive with `MainWindowHandle = 0`, 411 handles and 34 threads; no GUI keeper window existed |
+| Global hotkey | From an unrelated foreground window, `Ctrl+Alt+Space` opened Quick Shell |
+| Single instance | A second staged process exited 0 within five seconds; the original process ID remained and Quick Shell was shown |
+| HiddenWarm | Quick Shell ID 395448 was hidden and reopened 19,416 ms later with the same ID |
+| Immediate Destroyed | With retention 0, ID 3541168 disappeared; process 21712 remained responsive with no window; hotkey recreated ID 7210412 |
+| Timed Destroyed | With retention restored to 30, a hidden Quick Shell later reopened with a new ID while process 21712 and the saved configuration remained intact |
+| No-window residency | After Quick Shell hide and Control Center close, LexWisp remained alive with no targetable GUI window; hotkey recovery worked |
+| Repeated save | Changing retention 30 → 0 and later 0 → 30 both saved; final TOML restored the default 30 seconds |
+| Explicit exit | `Exit LexWisp` removed the final window and process; process count reached zero after bounded Host/shell shutdown |
+| Final staged smoke | Final rebuilt/package-copied executable started tray-only, a second launch woke one Quick Shell, and its Exit action again left zero processes |
+
+`Shell_NotifyIconW(NIM_ADD)` is a startup gate, so every successful resident launch above established a notification icon; the menu contains only Quick Shell, Settings, and Exit commands. The automation API could not target the Windows taskbar itself, so a physical pointer right-click on the icon was not separately replayed. Explorer-restart restoration also remains a later manual stress check.
+
+### Artifacts and measurements
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Same Windows 11 build 26200, Intel i5-13500, 34,132,275,200-byte RAM, NVIDIA RTX 5070 Ti + Intel UHD 770 inventory, 96-DPI baseline recorded for Stage 0 |
+| Final executable | 19,420,160 bytes |
+| Final ZIP | 7,379,991 bytes |
+| Tray-only snapshot | Working set 48,476,160 bytes; Private Bytes 58,605,568; 411 handles; 34 threads |
+| Visible snapshot after lifecycle cycles | Working set 71,081,984 bytes; Private Bytes 98,975,744; 594 handles; 48 threads |
+| EXE SHA-256 | `6ecd2a717a6b3fedbb61bc12e2921e8c826ab8af3b7d0976bf2e66687e3e56ad` |
+| ZIP SHA-256 | `f250ae325a78d6edda572b21daa55c91fc49824a3536c17815004baaa75ce96f` |
+
+Runnable directory: `dist/stage-01/`. Archive: `dist/LexWisp-stage-01-windows-x64.zip`, with adjacent checksum file. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used. Windows 10, clean-machine portability, Explorer restart, alternate DPI/multi-monitor layouts, prolonged resource trends, and GPU memory remain pending for their later acceptance stages.

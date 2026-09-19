@@ -1,6 +1,7 @@
-//! Native LexWisp surfaces, owned by the application shell.
+//! Native LexWisp surfaces. Platform and host behavior arrive through narrow ports.
 
-mod probe;
+mod control_center;
+mod quick_shell;
 mod surface;
 
-pub use surface::open_probe_window;
+pub use surface::{SurfaceController, SurfaceFactory, SurfaceWindowPlatform, WindowRegistry};
