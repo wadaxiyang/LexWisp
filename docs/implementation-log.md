@@ -190,3 +190,56 @@ The final Release was launched from `C:\123\CODE\LexWisp\dist\stage-01\LexWisp.e
 | ZIP SHA-256 | `f250ae325a78d6edda572b21daa55c91fc49824a3536c17815004baaa75ce96f` |
 
 Runnable directory: `dist/stage-01/`. Archive: `dist/LexWisp-stage-01-windows-x64.zip`, with adjacent checksum file. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used. Windows 10, clean-machine portability, Explorer restart, alternate DPI/multi-monitor layouts, prolonged resource trends, and GPU memory remain pending for their later acceptance stages.
+
+## Stage 2 — 2026-09-19
+
+Status: **implementation complete; locked build, local-mock AI tests, Release packaging, fresh-directory launch, single-instance wake, and SQLite recovery passed. The external real-provider call/manual Stop flow remains an open acceptance gate because no user API credential or local compatible model was available.** Per the project rules, that unavailable gate is recorded as pending rather than fabricated.
+
+### Delivered vertical slice
+
+- Added stable `ConversationId`, `MessageId`, `AttemptId`, and `InvocationId` types plus typed provider, AI, execution, Chat, action, and UI ports in `core`. Action lookup is now qualified by plugin and action ID, so packages may safely reuse local action names.
+- Added a single reused `reqwest` client with an OpenAI-compatible `/chat/completions` adapter. Base path prefixes are preserved; only HTTPS and loopback HTTP are accepted; credentials/fragments/full completion endpoints are rejected; cross-origin redirects are rejected; request, first/next-event, total-size, and total-duration limits are explicit. Both streaming and non-streaming responses are supported without automatic paid POST retry or provider fallback.
+- Added Windows generic Credential Manager storage. TOML stores only a credential reference. Provider save writes the new credential before atomically committing settings, rolls it back on settings failure, and deletes the superseded reference only after success.
+- Added the dedicated `lexwisp-sqlite` worker, one main connection, a bounded queue, WAL, schema version 1, and `conversations`, `messages`, and `executions` tables. Startup converts abandoned running states to interrupted. Checkpoints use sequence and retention-generation guards; Chat message content has one persistent source in `messages`.
+- Added `ExecutionStore`, `ExecutionAccumulator`, checkpoint projection, and `InvocationSupervisor`. Network semantic deltas first enter the in-memory store; UI notifications are coalesced around 33 ms; persistence checkpoints occur around 500 ms or 16 KiB; terminal state flushes UI immediately and waits for a bounded reliable SQLite enqueue/receipt. Exactly one terminal transition wins, stale plugin generations and post-terminal deltas are rejected, and storage failure leaves the copyable in-memory result visible as unsaved.
+- Added `lexwisp-plugins-builtin`. Its compiled Chat package is registered through the formal Plugin/Action Registry and receives only an identity-scoped `ChatRunPort`. `ChatController` owns the one Stage 2 conversation, stable message order, context assembly, send/stop/retry semantics, execution binding, and surface snapshots; it owns no HTTP, SQL, credentials, or windows.
+- Replaced the Stage 1 placeholder with the GPUI Kit Chat view: retained `TextareaState`, IME-safe Enter submit/Shift+Enter newline behavior, virtual `MessageScroller`, stable selectable Markdown, Kit messages/bubbles, Copy, Send, Stop, Retry, status/unsaved feedback, and jump-to-latest behavior. Hidden windows receive no Chat snapshot churn; showing a new/warm surface reads the latest controller snapshot, while Host execution continues independently.
+- Extended Control Center with provider name, Base URL, manual model ID, masked API key, authentication/stream switches, and real Test/Save operations. System settings and provider settings preserve each other. The page uses the locked GPUI Kit input, switch, button, theme, and scrolling components.
+- `HostHandles` now exposes only initialized typed services and builds scoped plugin ports; plugins never receive the handles. Host still owns one Tokio runtime, reused HTTP/storage/credential/provider resources, and bounded shutdown. No hidden GUI keeper window, per-request runtime, service locator, global event bus, raw JSON invoke escape hatch, or UI-side reqwest/SQLite path was added.
+
+### Automated and native results
+
+The following final commands passed on Windows x64:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **24 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked native hotkey replacement fixture also passed.
+- AI mock coverage includes distinct 401 and 429 errors, empty choices, fragmented UTF-8/JSON/SSE boundaries, interrupted streams with preserved partial text, and cancellation of a slow stream. No live key is stored in tests.
+- Storage/execution coverage proves an older checkpoint cannot overwrite a terminal message and that 1,000 small deltas produce fewer than 20 queued checkpoints rather than one SQL write per delta.
+- ChatController coverage proves the conversation ID remains stable while a send creates stable message IDs and projects the terminal assistant answer.
+
+The final packaged archive was extracted to fresh `acceptance-stage02-settings-20260919-193756` and `acceptance-stage02-final-20260919-193738` directories under `dist`. First launch exposed a responsive native `LexWisp · Settings` window and created executable-adjacent `data\lexwisp.db`, WAL, and SHM files. A second launch exited with code 0 and woke `LexWisp · Quick Shell` in the original process. The original process remained responsive. A preceding fresh-directory run was forcibly stopped and relaunched to verify WAL/database recovery; schema version 1 and all four expected tables were queried successfully.
+
+The Computer Use connector returned no native application surfaces in this session, so button-level screenshots, IME interaction, hiding during an active native request, and tray-driven graceful exit were not newly replayed. Process cleanup used `Stop-Process` and is not claimed as an explicit-quit acceptance result; Stage 1 already holds the separate explicit-exit evidence for the unchanged shell path.
+
+### Artifacts and measurements
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware | Windows 11 build 26200; Intel i5-13500; 33,332,300 KiB visible RAM; NVIDIA RTX 5070 Ti + Intel UHD 770 inventory |
+| Fresh Settings window | Working set 69,562,368 bytes; Private Bytes 82,841,600; 579 handles; 52 threads |
+| Quick Shell after second-launch wake | Working set 72,323,072 bytes; Private Bytes 100,397,056; 591 handles; 52 threads; process responsive |
+| Release executable | 31,055,360 bytes; SHA-256 `c3c7783a6044d091abdfb3f4c6bfbddb24cfc182dd335c1eda3a9f6a584e78f0` |
+| Release ZIP | 12,114,860 bytes; SHA-256 `4f040ab714024361015bf39956015fed6e63bfedea8e9ed105e194afd39af8de` |
+
+Runnable directory: `dist/stage-02/`. Archive: `dist/LexWisp-stage-02-windows-x64.zip`, with adjacent checksum. Package contents are explicitly allowlisted and contain no settings, database, logs, caches, or credentials. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
+
+Pending Stage 2 acceptance: configure a user-authorized real compatible endpoint through Control Center, complete one streamed answer, manually stop a long answer, hide/reopen Quick Shell during the request, inspect the persisted rows, verify the key is absent from TOML/log output, and capture the native UI evidence. Windows 10, clean-machine portability, alternate IMEs, DPI/multi-monitor layouts, prolonged resource trends, GPU memory, and provider-specific redirect/proxy behavior remain later/manual gates.

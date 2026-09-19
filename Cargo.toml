@@ -4,6 +4,7 @@ members = [
     "crates/lexwisp-core",
     "crates/lexwisp-host",
     "crates/lexwisp-platform-windows",
+    "crates/lexwisp-plugins-builtin",
     "crates/lexwisp-storage",
     "crates/lexwisp-ui",
 ]
@@ -18,23 +19,32 @@ publish = false
 [workspace.dependencies]
 anyhow = "=1.0.102"
 async-channel = "=2.5.0"
+futures-util = "=0.3.34"
+futures-lite = "=2.6.1"
 gpui-kit = "=0.6.1"
 lexwisp-core = { path = "crates/lexwisp-core" }
 lexwisp-host = { path = "crates/lexwisp-host" }
 lexwisp-platform-windows = { path = "crates/lexwisp-platform-windows" }
+lexwisp-plugins-builtin = { path = "crates/lexwisp-plugins-builtin" }
 lexwisp-storage = { path = "crates/lexwisp-storage" }
 lexwisp-ui = { path = "crates/lexwisp-ui" }
 raw-window-handle = "=0.6.2"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls", "stream", "system-proxy"] }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
 thiserror = "=2.0.20"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = "=0.7.19"
 toml = "=0.8.23"
+url = "=2.5.8"
+uuid = { version = "=1.26.1", features = ["serde", "v4"] }
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
+    "Win32_Security_Credentials",
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",

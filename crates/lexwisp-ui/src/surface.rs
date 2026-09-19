@@ -3,12 +3,12 @@ use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::{
     AnyView, App, AppContext, Bounds, Context, IntoElement, ParentElement, Render, Styled,
-    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowId,
+    Subscription, Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowId,
     WindowOptions, div, px, size,
 };
-use lexwisp_core::{SettingsUiPort, SurfaceKind, ThemePreference};
+use lexwisp_core::{ChatUiPort, ProviderUiPort, SettingsUiPort, SurfaceKind, ThemePreference};
 
-use crate::{control_center::ControlCenter, quick_shell::QuickShell};
+use crate::control_center::ControlCenter;
 
 pub trait SurfaceWindowPlatform {
     fn hide(&self, window: &Window) -> Result<(), String>;
@@ -37,16 +37,30 @@ pub struct WindowRegistry {
 pub struct SurfaceController {
     platform: Rc<dyn SurfaceWindowPlatform>,
     settings: Arc<dyn SettingsUiPort>,
+    providers: Arc<dyn ProviderUiPort>,
+    chat: Arc<dyn ChatUiPort>,
+    quick_shell_factory: QuickShellViewFactory,
     registry: WindowRegistry,
 }
 
+pub type QuickShellViewFactory =
+    Rc<dyn Fn(WeakEntity<SurfaceController>, &mut Window, &mut App) -> AnyView>;
 pub type SurfaceFactory = SurfaceController;
 
 impl SurfaceController {
-    pub fn new(platform: Rc<dyn SurfaceWindowPlatform>, settings: Arc<dyn SettingsUiPort>) -> Self {
+    pub fn new(
+        platform: Rc<dyn SurfaceWindowPlatform>,
+        settings: Arc<dyn SettingsUiPort>,
+        providers: Arc<dyn ProviderUiPort>,
+        chat: Arc<dyn ChatUiPort>,
+        quick_shell_factory: QuickShellViewFactory,
+    ) -> Self {
         Self {
             platform,
             settings,
+            providers,
+            chat,
+            quick_shell_factory,
             registry: WindowRegistry::default(),
         }
     }
@@ -85,6 +99,7 @@ impl SurfaceController {
     }
 
     pub fn hide_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chat.set_surface_visible(false);
         if self.platform.hide(window).is_err() {
             window.remove_window();
             self.registry.entries.remove(&SurfaceKind::QuickShell);
@@ -94,6 +109,7 @@ impl SurfaceController {
     }
 
     fn begin_warm_retention(&mut self, cx: &mut Context<Self>) {
+        self.chat.set_surface_visible(false);
         let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::QuickShell) else {
             return;
         };
@@ -145,6 +161,9 @@ impl SurfaceController {
                 Ok::<(), anyhow::Error>(())
             });
             if matches!(shown, Ok(Ok(()))) {
+                if kind == SurfaceKind::QuickShell {
+                    self.chat.set_surface_visible(true);
+                }
                 return Ok(());
             }
             self.registry.entries.remove(&kind);
@@ -154,6 +173,8 @@ impl SurfaceController {
         let generation = self.registry.next_generation;
         let controller = cx.weak_entity();
         let settings = self.settings.clone();
+        let providers = self.providers.clone();
+        let quick_shell_factory = self.quick_shell_factory.clone();
         let preference = settings.snapshot().settings().theme();
         let options = build_window_options(kind, cx);
         let handle = cx.open_window(options, move |window, cx| {
@@ -168,10 +189,10 @@ impl SurfaceController {
                 });
             }
             let content: AnyView = match kind {
-                SurfaceKind::QuickShell => cx.new(|_| QuickShell::new(controller.clone())).into(),
-                SurfaceKind::ControlCenter => {
-                    cx.new(|_| ControlCenter::new(settings.clone())).into()
-                }
+                SurfaceKind::QuickShell => quick_shell_factory(controller.clone(), window, cx),
+                SurfaceKind::ControlCenter => cx
+                    .new(|cx| ControlCenter::new(settings.clone(), providers.clone(), window, cx))
+                    .into(),
             };
             let shell =
                 cx.new(|_| LexWispWindowRoot::new(content, settings.clone(), preference, window));
@@ -186,6 +207,9 @@ impl SurfaceController {
                 warm_expiry: None,
             },
         );
+        if kind == SurfaceKind::QuickShell {
+            self.chat.set_surface_visible(true);
+        }
         Ok(())
     }
 
@@ -218,8 +242,8 @@ fn build_window_options(kind: SurfaceKind, cx: &App) -> WindowOptions {
     let (title, dimensions, minimum) = match kind {
         SurfaceKind::QuickShell => (
             "LexWisp · Quick Shell",
-            size(px(560.), px(310.)),
-            size(px(480.), px(280.)),
+            size(px(720.), px(640.)),
+            size(px(560.), px(480.)),
         ),
         SurfaceKind::ControlCenter => (
             "LexWisp · Settings",

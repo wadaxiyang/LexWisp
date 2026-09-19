@@ -4,7 +4,8 @@ use std::{
 };
 
 use lexwisp_core::{
-    ActionDescriptor, ActionHandler, ActionId, Capability, PluginDescriptor, PluginId,
+    ActionDescriptor, ActionError, ActionHandler, ActionId, ActionRequest, ActionUiPort,
+    Capability, PluginDescriptor, PluginId, QualifiedActionId,
 };
 use thiserror::Error;
 
@@ -42,7 +43,7 @@ pub enum RegistryError {
 struct RegistryState {
     generation: u64,
     plugins: HashMap<PluginId, PluginDescriptor>,
-    actions: HashMap<ActionId, (ActionDescriptor, Arc<dyn ActionHandler>)>,
+    actions: HashMap<QualifiedActionId, (ActionDescriptor, Arc<dyn ActionHandler>)>,
     subscribers: Vec<async_channel::Sender<RegistryEvent>>,
 }
 
@@ -79,7 +80,8 @@ impl PluginRegistry {
             if action.display_name().trim().is_empty() {
                 return Err(RegistryError::EmptyActionName);
             }
-            if state.actions.contains_key(action.id())
+            let qualified = QualifiedActionId::new(action.plugin_id().clone(), action.id().clone());
+            if state.actions.contains_key(&qualified)
                 || !package_action_ids.insert(action.id().clone())
             {
                 return Err(RegistryError::DuplicateAction(action.id().clone()));
@@ -89,9 +91,9 @@ impl PluginRegistry {
         let plugin_id = descriptor.id().clone();
         state.plugins.insert(plugin_id.clone(), descriptor);
         for (descriptor, handler) in actions {
-            state
-                .actions
-                .insert(descriptor.id().clone(), (descriptor, handler));
+            let qualified =
+                QualifiedActionId::new(descriptor.plugin_id().clone(), descriptor.id().clone());
+            state.actions.insert(qualified, (descriptor, handler));
         }
         state.generation = state.generation.saturating_add(1);
         let generation = state.generation;
@@ -168,13 +170,28 @@ pub struct ActionRegistry {
 }
 
 impl ActionRegistry {
-    pub fn handler(&self, id: &ActionId) -> Option<Arc<dyn ActionHandler>> {
+    pub fn handler(&self, id: &QualifiedActionId) -> Option<Arc<dyn ActionHandler>> {
         self.state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .actions
             .get(id)
             .map(|(_, handler)| handler.clone())
+    }
+
+    pub fn contains(&self, id: &QualifiedActionId) -> bool {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .actions
+            .contains_key(id)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
     }
 
     pub fn descriptors(&self) -> Vec<ActionDescriptor> {
@@ -185,6 +202,32 @@ impl ActionRegistry {
             .values()
             .map(|(descriptor, _)| descriptor.clone())
             .collect()
+    }
+}
+
+pub struct ActionUiService {
+    actions: ActionRegistry,
+}
+
+impl ActionUiService {
+    pub const fn new(actions: ActionRegistry) -> Self {
+        Self { actions }
+    }
+}
+
+impl ActionUiPort for ActionUiService {
+    fn invoke<'a>(
+        &'a self,
+        action: QualifiedActionId,
+        request: ActionRequest,
+    ) -> lexwisp_core::ActionFuture<'a> {
+        let handler = self.actions.handler(&action);
+        Box::pin(async move {
+            let handler = handler.ok_or_else(|| {
+                ActionError::Failed(format!("action '{action}' is not registered"))
+            })?;
+            handler.execute(request).await
+        })
     }
 }
 

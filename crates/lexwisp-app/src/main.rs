@@ -3,14 +3,15 @@
 use std::{cell::RefCell, process::ExitCode, rc::Rc, sync::Arc};
 
 use gpui_kit::{AppContext, Entity, Global, QuitMode, Subscription, Task, Window};
-use lexwisp_core::HostUiCommand;
+use lexwisp_core::{ActionHandler, ChatUiPort, HostUiCommand};
 use lexwisp_host::Host;
 use lexwisp_platform_windows::{
     SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsShell, hide_native_window,
     show_native_window, show_startup_error,
 };
+use lexwisp_plugins_builtin::{ChatController, QuickShellChat, chat_action, chat_plugin};
 use lexwisp_storage::ConfigStore;
-use lexwisp_ui::{SurfaceController, SurfaceWindowPlatform};
+use lexwisp_ui::{QuickShellViewFactory, SurfaceController, SurfaceWindowPlatform};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 struct NativeWindowPlatform;
@@ -99,6 +100,39 @@ fn run() -> Result<(), String> {
     })));
     let owners_for_app = owners.clone();
     let settings = handles.settings();
+    let providers = handles.providers();
+    let actions = handles.action_ui();
+    let plugin = chat_plugin();
+    let action = chat_action();
+    let chat_controller = ChatController::new(handles.chat_run_port(plugin.id().clone()));
+    let handler: Arc<dyn ActionHandler> = chat_controller.clone();
+    handles
+        .plugins()
+        .register_package(plugin.clone(), vec![(action.clone(), handler)])
+        .map_err(|error| error.to_string())?;
+    handles.capabilities().replace_grants(
+        plugin.id().clone(),
+        plugin.requested_capabilities().iter().copied(),
+    );
+    let chat: Arc<dyn ChatUiPort> = chat_controller.clone();
+    let quick_shell_factory: QuickShellViewFactory = {
+        let chat = chat.clone();
+        let actions = actions.clone();
+        let action = chat_controller.action_id();
+        Rc::new(move |controller, window, cx| {
+            cx.new(|cx| {
+                QuickShellChat::new(
+                    controller,
+                    chat.clone(),
+                    actions.clone(),
+                    action.clone(),
+                    window,
+                    cx,
+                )
+            })
+            .into()
+        })
+    };
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -106,7 +140,13 @@ fn run() -> Result<(), String> {
             gpui_kit::init(cx);
             cx.set_quit_mode(QuitMode::Explicit);
             let surfaces = cx.new(|_| {
-                SurfaceController::new(Rc::new(NativeWindowPlatform), settings.clone())
+                SurfaceController::new(
+                    Rc::new(NativeWindowPlatform),
+                    settings.clone(),
+                    providers.clone(),
+                    chat.clone(),
+                    quick_shell_factory.clone(),
+                )
             });
             let surface_for_commands = surfaces.downgrade();
             let command_bridge = cx.spawn(async move |cx| {

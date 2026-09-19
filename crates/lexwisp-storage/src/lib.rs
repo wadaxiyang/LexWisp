@@ -6,6 +6,10 @@ use std::{
 
 use lexwisp_core::{AppSettings, AtomicFileWriter, SettingsError};
 
+mod content;
+
+pub use content::{ContentStore, ContentStoreOwner, StorageError, WriteReceipt};
+
 #[derive(Clone)]
 pub struct ConfigStore {
     path: PathBuf,
@@ -56,6 +60,12 @@ impl ConfigStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn data_directory(&self) -> &Path {
+        self.path
+            .parent()
+            .expect("ConfigStore paths are always created with a data directory")
     }
 
     pub fn load(&self) -> Result<LoadedSettings, SettingsError> {

@@ -3,6 +3,8 @@ use std::{future::Future, pin::Pin};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::{ModelProfile, ProviderConfig, ProviderId};
+
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,6 +59,10 @@ pub struct AppSettings {
     theme: ThemePreference,
     launch_at_startup: bool,
     popup_retention_seconds: u64,
+    #[serde(default)]
+    providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    default_profile: Option<ModelProfile>,
 }
 
 impl Default for AppSettings {
@@ -67,6 +73,8 @@ impl Default for AppSettings {
             theme: ThemePreference::System,
             launch_at_startup: false,
             popup_retention_seconds: 30,
+            providers: Vec::new(),
+            default_profile: None,
         }
     }
 }
@@ -80,6 +88,28 @@ impl AppSettings {
             return Err(SettingsError::Invalid(
                 "popup retention must be between 0 and 600 seconds".into(),
             ));
+        }
+        if let Some(profile) = &self.default_profile {
+            let provider = self
+                .providers
+                .iter()
+                .find(|provider| provider.id() == profile.provider_id())
+                .ok_or_else(|| {
+                    SettingsError::Invalid(format!(
+                        "default profile references missing provider '{}'",
+                        profile.provider_id().as_str()
+                    ))
+                })?;
+            if !provider
+                .model_ids()
+                .iter()
+                .any(|model| model == profile.model_id())
+            {
+                return Err(SettingsError::Invalid(format!(
+                    "default profile references missing model '{}'",
+                    profile.model_id()
+                )));
+            }
         }
         Ok(())
     }
@@ -104,6 +134,18 @@ impl AppSettings {
         self.popup_retention_seconds
     }
 
+    pub fn providers(&self) -> &[ProviderConfig] {
+        &self.providers
+    }
+
+    pub const fn default_profile(&self) -> Option<&ModelProfile> {
+        self.default_profile.as_ref()
+    }
+
+    pub fn provider(&self, id: &ProviderId) -> Option<&ProviderConfig> {
+        self.providers.iter().find(|provider| provider.id() == id)
+    }
+
     pub fn with_hotkey(mut self, hotkey: GlobalHotkey) -> Self {
         self.hotkey = hotkey;
         self
@@ -121,6 +163,14 @@ impl AppSettings {
 
     pub fn with_popup_retention_seconds(mut self, seconds: u64) -> Self {
         self.popup_retention_seconds = seconds;
+        self
+    }
+
+    pub fn with_provider(mut self, provider: ProviderConfig, profile: ModelProfile) -> Self {
+        self.providers
+            .retain(|existing| existing.id() != provider.id());
+        self.providers.push(provider);
+        self.default_profile = Some(profile);
         self
     }
 }

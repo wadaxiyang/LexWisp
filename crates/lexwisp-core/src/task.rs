@@ -2,5 +2,6 @@
 pub enum TaskOwner {
     Process,
     Plugin(String),
+    Invocation(String),
     Surface(String),
 }

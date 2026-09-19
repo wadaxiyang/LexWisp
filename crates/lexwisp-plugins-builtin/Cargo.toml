@@ -1,5 +1,5 @@
 [package]
-name = "lexwisp-storage"
+name = "lexwisp-plugins-builtin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,12 @@ publish.workspace = true
 
 [dependencies]
 async-channel.workspace = true
+gpui-kit.workspace = true
 lexwisp-core.workspace = true
-rusqlite.workspace = true
-thiserror.workspace = true
-toml.workspace = true
+lexwisp-ui.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+futures-lite.workspace = true

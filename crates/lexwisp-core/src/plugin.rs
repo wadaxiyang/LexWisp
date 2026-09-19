@@ -1,8 +1,10 @@
 use std::{fmt, future::Future, pin::Pin, str::FromStr};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct PluginId(String);
 
 impl PluginId {
@@ -49,7 +51,8 @@ impl FromStr for PluginId {
 #[error("'{0}' is not a valid reverse-DNS plugin ID")]
 pub struct PluginIdError(String);
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct ActionId(String);
 
 impl ActionId {
@@ -75,6 +78,35 @@ impl ActionId {
 impl fmt::Display for ActionId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct QualifiedActionId {
+    plugin_id: PluginId,
+    action_id: ActionId,
+}
+
+impl QualifiedActionId {
+    pub const fn new(plugin_id: PluginId, action_id: ActionId) -> Self {
+        Self {
+            plugin_id,
+            action_id,
+        }
+    }
+
+    pub const fn plugin_id(&self) -> &PluginId {
+        &self.plugin_id
+    }
+
+    pub const fn action_id(&self) -> &ActionId {
+        &self.action_id
+    }
+}
+
+impl fmt::Display for QualifiedActionId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}/{}", self.plugin_id, self.action_id)
     }
 }
 
@@ -169,11 +201,15 @@ pub enum ActionError {
     Failed(String),
 }
 
+pub type ActionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ActionResult, ActionError>> + Send + 'a>>;
+
 pub trait ActionHandler: Send + Sync {
-    fn execute<'a>(
-        &'a self,
-        request: ActionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult, ActionError>> + Send + 'a>>;
+    fn execute<'a>(&'a self, request: ActionRequest) -> ActionFuture<'a>;
+}
+
+pub trait ActionUiPort: Send + Sync {
+    fn invoke<'a>(&'a self, action: QualifiedActionId, request: ActionRequest) -> ActionFuture<'a>;
 }
 
 #[cfg(test)]
