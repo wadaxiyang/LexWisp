@@ -7,6 +7,9 @@ use gpui_kit::{
 use crate::probe::Probe;
 
 fn build_window_options(cx: &App) -> WindowOptions {
+    // Window bounds are a platform geometry boundary, so GPUI requires resolved
+    // pixel dimensions here. Product content below the window root stays on the
+    // rem-based layout scale.
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,

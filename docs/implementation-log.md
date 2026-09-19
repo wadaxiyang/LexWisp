@@ -101,8 +101,19 @@ Memory was sampled with `Get-Process` while the window was visible, with no netw
 
 - Runnable directory: `dist/stage-00/` (`LexWisp.exe`, `vcruntime140.dll`, `README.md`, `THIRD-PARTY-NOTICES.txt`).
 - ZIP: `dist/LexWisp-stage-00-windows-x64.zip`; checksum: adjacent `.zip.sha256`.
-- EXE SHA-256: `a1cc716d22b72e238c6fdd086b7906021afeda94577710a7ab8a922d7c219d52`.
-- Final ZIP SHA-256: `bdabbeecc2fd618a68dc3f6da710ed69d2d2e5ae4c4f17eea463db016cf233fc`.
+- EXE SHA-256: `1cf749fdee2e8f2eaac12f19dcda1414b8674a7cdfdb7a86c71e3c4980dc0efd`.
+- Final ZIP SHA-256: `7baab70550a66d81eea827f5f0974bccb5cca4a864c92ea92b46bcfa6d1ba141`.
 - No AI/API, tray, global hotkey, persistence, settings UI or plugin execution is delivered at this stage. The application labels that boundary explicitly.
 - Windows 10, clean machines without development tools, alternative IMEs, multiple monitors/scales, tiny displays, 100-window-cycle resource trends, GPU memory and startup latency are **not verified**. App-local runtime loading on this developer machine is not a substitute for Stage 9's clean-machine gate.
 - Stage 1 should introduce the real Host services/scoped handles, task ownership, single instance, tray/hotkey, WindowRegistry and HiddenWarm lifecycle, UI command bridge and persisted basic settings. Move the startup-only Win32 diagnostic into the platform crate when that real layer is introduced. Do not retain Stage 0's last-window-exits policy once tray/hotkey residency is implemented.
+
+### Stage 0 re-audit — 2026-09-19
+
+- Confirmed the installed `gpui-kit` and `gpui-kit-design-guides` skills are available. Read their complete required design/coding guides, component conventions, application recipe, and the locked 0.6.1 source/tests relevant to Input, Textarea, Root overlays, and window creation.
+- Added an explicit `AGENTS.md` rule that all LexWisp UI work must use those two Longbridge GPUI Kit skills and the locked workspace APIs; agents must stop UI changes if the skills are unavailable rather than substitute another framework.
+- Re-read `LexWisp_SPEC.md` and `LexWisp_SPEC_EXTEND.md` in full and audited every Stage 0 task against source, dependencies, artifacts, and the evidence above. Stage 0 remains deliberately limited to `lexwisp-app` and `lexwisp-ui`; no Stage 1 scaffolding was added.
+- Replaced the probe's fixed-pixel content heights with GPUI rem-scale helpers (`h_32` and `h_40`) and corrected the dialog-opening command label to `关于验证…`. The remaining direct `px` values are confined to `WindowOptions`, where GPUI requires resolved platform window geometry, and that exception is documented at the owner.
+- Re-ran successfully: `cargo fmt --all -- --check`, workspace check, workspace/all-target Clippy with warnings denied, workspace tests, Release build, and `scripts/package.ps1 -SkipBuild`. QuickJS again passed 2/2 tests; the loop interrupted after 50.0685 ms.
+- The rebuilt staged executable is 22,809,600 bytes and the ZIP is 8,477,326 bytes. The artifact hashes above now describe this rebuilt output.
+- Launched the rebuilt executable from `C:\123\CODE\LexWisp\dist\stage-00\LexWisp.exe`. The process exposed a nonzero main window handle titled `LexWisp · Stage 0`, reported responsive, loaded from the staged path, and exited within 10 seconds after its main window was closed; final process count was zero. Snapshot at launch: working set 66,568,192 bytes, Private Bytes 81,059,840, 561 handles, 47 threads.
+- The Windows computer-use connector returned no native application inventory in this session and its native app methods were disabled, so the earlier full input/IME/selection/overlay native acceptance was not represented as newly rerun. The current changes do not alter those interaction paths; current compile, test, package, launch, responsive-window, and clean-exit gates passed. A fresh screenshot/keyboard smoke run remains desirable when native UI automation is available, but it does not invalidate the previously recorded Stage 0 acceptance.

@@ -39,6 +39,7 @@ ExecutionStore owns live execution state; ChatController owns conversation seman
 
 ## UI discipline
 
+- Longbridge GPUI Kit is the mandatory UI framework for all LexWisp UI work. Before designing, reviewing, or changing any UI, agents must use the installed `gpui-kit` and `gpui-kit-design-guides` skills, read both `SKILL.md` files and every guide/reference those skills mark as required for the task, then verify APIs against the workspace's locked Kit source and matching examples. If either skill is unavailable, stop UI changes and report the blocker rather than substituting another UI framework or relying on remembered APIs.
 - Before UI work, read Cargo.lock, workspace dependencies, locked Kit source and matching examples. Import the GPUI family through `gpui_kit`; do not mix sources/versions. Freeze working dependencies; pin Git patches to full commits and document removal conditions.
 - Reuse Kit inputs, buttons, selection, dialogs, themes, scrolling and lists. Do not build a second general component library or copy upstream implementations.
 - Initialize Kit once. Each real window gets one top-level Kit Root and shared overlay setup. Stage 0 uses `build_window_options`, `LexWispWindowRoot`, and `open_surface_window`; Stage 1 adds registry/lifecycle/bridge. Window creation contains no business logic.

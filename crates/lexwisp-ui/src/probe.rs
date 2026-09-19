@@ -5,7 +5,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, px,
+    Subscription, Window, div,
 };
 
 pub(crate) struct Probe {
@@ -88,14 +88,14 @@ impl Render for Probe {
             .child(div().text_sm().text_color(cx.theme().muted_foreground)
                 .child("验证输入、文字选择与窗口生命周期。AI、热键和托盘将在后续阶段接入。"))
             .child(Input::new(&self.label).aria_label("验证标题"))
-            .child(Textarea::new(&self.input).aria_label("输入文本").h(px(120.)))
+            .child(Textarea::new(&self.input).aria_label("输入文本").h_32())
             .child(
                 div().flex().items_center().gap_2()
                     .child(Button::new("preview").primary().label("预览原文").on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Enter 提交 · Shift+Enter 换行")),
             )
             .child(div().text_sm().child("结果 · 可选择、可复制、只读"))
-            .child(Textarea::new(&self.result).readonly(true).aria_label("只读结果").h(px(150.)))
+            .child(Textarea::new(&self.result).readonly(true).aria_label("只读结果").h_40())
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.status.clone()))
             .child(
                 div().flex().gap_2()
@@ -103,7 +103,7 @@ impl Render for Probe {
                         let mode = if cx.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
                         Theme::change(mode, Some(window), cx);
                     }))
-                    .child(Button::new("overlay").label("关于验证").on_click(|_, window, cx| {
+                    .child(Button::new("overlay").label("关于验证…").on_click(|_, window, cx| {
                         window.open_dialog(cx, |dialog, _, _| dialog.title("Stage 0 验证")
                             .child("输入内容仅用于本地预览。按 Escape 或关闭按钮返回，检查焦点恢复。"));
                     }))
