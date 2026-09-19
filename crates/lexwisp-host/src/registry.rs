@@ -19,6 +19,10 @@ pub enum RegistryEvent {
         plugin_id: PluginId,
         generation: u64,
     },
+    PackageReplaced {
+        plugin_id: PluginId,
+        generation: u64,
+    },
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -107,6 +111,38 @@ impl PluginRegistry {
         Ok(generation)
     }
 
+    pub fn replace_package(
+        &self,
+        descriptor: PluginDescriptor,
+        actions: Vec<(ActionDescriptor, Arc<dyn ActionHandler>)>,
+    ) -> Result<u64, RegistryError> {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        validate_package(&state, &descriptor, &actions, true)?;
+        let plugin_id = descriptor.id().clone();
+        state
+            .actions
+            .retain(|_, (action, _)| action.plugin_id() != &plugin_id);
+        state.plugins.insert(plugin_id.clone(), descriptor);
+        for (descriptor, handler) in actions {
+            state
+                .actions
+                .insert(descriptor.qualified_id(), (descriptor, handler));
+        }
+        state.generation = state.generation.saturating_add(1);
+        let generation = state.generation;
+        publish(
+            &mut state.subscribers,
+            RegistryEvent::PackageReplaced {
+                plugin_id,
+                generation,
+            },
+        );
+        Ok(generation)
+    }
+
     pub fn descriptors(&self) -> Vec<PluginDescriptor> {
         self.state
             .read()
@@ -162,6 +198,42 @@ impl PluginRegistry {
             state: self.state.clone(),
         }
     }
+}
+
+fn validate_package(
+    state: &RegistryState,
+    descriptor: &PluginDescriptor,
+    actions: &[(ActionDescriptor, Arc<dyn ActionHandler>)],
+    replacing: bool,
+) -> Result<(), RegistryError> {
+    if descriptor.display_name().trim().is_empty() {
+        return Err(RegistryError::EmptyPluginName);
+    }
+    if !replacing && state.plugins.contains_key(descriptor.id()) {
+        return Err(RegistryError::DuplicatePlugin(descriptor.id().clone()));
+    }
+    let mut package_action_ids = HashSet::new();
+    for (action, _) in actions {
+        if action.plugin_id() != descriptor.id() {
+            return Err(RegistryError::ActionOwnership {
+                action: action.id().clone(),
+                expected: descriptor.id().clone(),
+                actual: action.plugin_id().clone(),
+            });
+        }
+        if action.display_name().trim().is_empty() {
+            return Err(RegistryError::EmptyActionName);
+        }
+        let qualified = action.qualified_id();
+        let conflicts = state
+            .actions
+            .get(&qualified)
+            .is_some_and(|(existing, _)| !replacing || existing.plugin_id() != descriptor.id());
+        if conflicts || !package_action_ids.insert(action.id().clone()) {
+            return Err(RegistryError::DuplicateAction(action.id().clone()));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -231,9 +303,16 @@ impl ActionUiPort for ActionUiService {
     }
 }
 
+#[derive(Clone, Debug)]
+struct GrantRecord {
+    package_hash: Option<String>,
+    generation: Option<u64>,
+    capabilities: HashSet<Capability>,
+}
+
 #[derive(Clone, Default)]
 pub struct CapabilityAuthority {
-    grants: Arc<RwLock<HashMap<PluginId, HashSet<Capability>>>>,
+    grants: Arc<RwLock<HashMap<PluginId, GrantRecord>>>,
 }
 
 impl CapabilityAuthority {
@@ -241,7 +320,34 @@ impl CapabilityAuthority {
         self.grants
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(plugin, grants.into_iter().collect());
+            .insert(
+                plugin,
+                GrantRecord {
+                    package_hash: None,
+                    generation: None,
+                    capabilities: grants.into_iter().collect(),
+                },
+            );
+    }
+
+    pub fn replace_bound_grants(
+        &self,
+        plugin: PluginId,
+        package_hash: String,
+        generation: u64,
+        grants: impl IntoIterator<Item = Capability>,
+    ) {
+        self.grants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                plugin,
+                GrantRecord {
+                    package_hash: Some(package_hash),
+                    generation: Some(generation),
+                    capabilities: grants.into_iter().collect(),
+                },
+            );
     }
 
     pub fn is_granted(&self, plugin: &PluginId, capability: Capability) -> bool {
@@ -249,7 +355,25 @@ impl CapabilityAuthority {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(plugin)
-            .is_some_and(|grants| grants.contains(&capability))
+            .is_some_and(|grant| grant.capabilities.contains(&capability))
+    }
+
+    pub fn is_bound_grant_valid(
+        &self,
+        plugin: &PluginId,
+        capability: Capability,
+        package_hash: &str,
+        generation: u64,
+    ) -> bool {
+        self.grants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(plugin)
+            .is_some_and(|grant| {
+                grant.package_hash.as_deref() == Some(package_hash)
+                    && grant.generation == Some(generation)
+                    && grant.capabilities.contains(&capability)
+            })
     }
 
     pub fn revoke(&self, plugin: &PluginId) {
@@ -347,5 +471,46 @@ mod tests {
         assert!(registry.descriptors().is_empty());
         assert!(registry.actions().descriptors().is_empty());
         assert_eq!(registry.generation(), 2);
+    }
+
+    #[test]
+    fn replacement_is_atomic_and_invalid_replacement_keeps_the_old_action() {
+        let registry = PluginRegistry::default();
+        let (plugin, action) = fixture();
+        let plugin_id = plugin.id().clone();
+        registry
+            .register_package(plugin.clone(), vec![(action, Arc::new(FixtureHandler))])
+            .expect("fixture should register");
+        let other = PluginId::parse("org.lexwisp.other").expect("fixture ID is valid");
+        let invalid_action = ActionDescriptor::new(
+            other,
+            ActionId::parse("bad").expect("fixture action ID is valid"),
+            "Bad",
+        );
+        assert!(
+            registry
+                .replace_package(plugin, vec![(invalid_action, Arc::new(FixtureHandler))])
+                .is_err()
+        );
+        assert!(
+            registry
+                .descriptors()
+                .iter()
+                .any(|descriptor| descriptor.id() == &plugin_id)
+        );
+        assert_eq!(registry.actions().descriptors().len(), 1);
+        assert_eq!(registry.generation(), 1);
+    }
+
+    #[test]
+    fn grants_are_bound_to_hash_and_generation() {
+        let authority = CapabilityAuthority::default();
+        let plugin = PluginId::parse("org.lexwisp.fixture").expect("fixture ID is valid");
+        authority.replace_bound_grants(plugin.clone(), "hash-a".into(), 7, [Capability::AiInvoke]);
+        assert!(authority.is_bound_grant_valid(&plugin, Capability::AiInvoke, "hash-a", 7));
+        assert!(!authority.is_bound_grant_valid(&plugin, Capability::AiInvoke, "hash-b", 7));
+        assert!(!authority.is_bound_grant_valid(&plugin, Capability::AiInvoke, "hash-a", 8));
+        authority.revoke(&plugin);
+        assert!(!authority.is_bound_grant_valid(&plugin, Capability::AiInvoke, "hash-a", 7));
     }
 }

@@ -8,7 +8,7 @@ use lexwisp_core::{AppSettings, AtomicFileWriter, SettingsError};
 
 mod content;
 
-pub use content::{ContentStore, ContentStoreOwner, StorageError, WriteReceipt};
+pub use content::{ContentStore, ContentStoreOwner, StorageError, StoredPlugin, WriteReceipt};
 
 #[derive(Clone)]
 pub struct ConfigStore {

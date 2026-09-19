@@ -18,6 +18,7 @@ use crate::{
 };
 
 struct ActiveInvocation {
+    plugin_id: PluginId,
     conversation_id: Option<lexwisp_core::ConversationId>,
     cancellation: CancellationToken,
 }
@@ -93,6 +94,7 @@ impl InvocationSupervisor {
             active.insert(
                 invocation_id.clone(),
                 ActiveInvocation {
+                    plugin_id: plugin_id.clone(),
                     conversation_id: request.conversation_id.clone(),
                     cancellation: cancellation.clone(),
                 },
@@ -240,6 +242,22 @@ impl InvocationSupervisor {
         Ok(())
     }
 
+    pub fn cancel_plugin(&self, plugin_id: &PluginId) -> usize {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cancelled = 0;
+        for (invocation_id, invocation) in active.iter() {
+            if &invocation.plugin_id == plugin_id {
+                self.executions.mark_cancelling(invocation_id);
+                invocation.cancellation.cancel();
+                cancelled += 1;
+            }
+        }
+        cancelled
+    }
+
     pub fn shutdown(&self) {
         self.closing.cancel();
         let active = self
@@ -370,6 +388,7 @@ pub struct ScopedTextRunPort {
     capabilities: CapabilityAuthority,
     supervisor: Arc<InvocationSupervisor>,
     tasks: HostTaskPort,
+    binding: Option<(String, u64)>,
 }
 
 impl ScopedTextRunPort {
@@ -386,6 +405,26 @@ impl ScopedTextRunPort {
             capabilities,
             supervisor,
             tasks,
+            binding: None,
+        }
+    }
+
+    pub(crate) fn new_bound(
+        plugin_id: PluginId,
+        actions: crate::ActionRegistry,
+        capabilities: CapabilityAuthority,
+        supervisor: Arc<InvocationSupervisor>,
+        tasks: HostTaskPort,
+        package_hash: String,
+        generation: u64,
+    ) -> Self {
+        Self {
+            plugin_id,
+            actions,
+            capabilities,
+            supervisor,
+            tasks,
+            binding: Some((package_hash, generation)),
         }
     }
 }
@@ -397,9 +436,20 @@ impl TextRunPort for ScopedTextRunPort {
         observer: Arc<dyn ExecutionObserver>,
     ) -> TextRunFuture<'_> {
         let invalid_identity = request.action.plugin_id() != &self.plugin_id;
-        let authorized = self
-            .capabilities
-            .is_granted(&self.plugin_id, Capability::AiInvoke);
+        let authorized = self.binding.as_ref().map_or_else(
+            || {
+                self.capabilities
+                    .is_granted(&self.plugin_id, Capability::AiInvoke)
+            },
+            |(hash, generation)| {
+                self.capabilities.is_bound_grant_valid(
+                    &self.plugin_id,
+                    Capability::AiInvoke,
+                    hash,
+                    *generation,
+                )
+            },
+        );
         let registered = self.actions.contains(&request.action);
         if invalid_identity || !authorized || !registered {
             return Box::pin(async {
@@ -414,7 +464,11 @@ impl TextRunPort for ScopedTextRunPort {
         };
         let invocation_id = InvocationId::new();
         let plugin_id = self.plugin_id.clone();
-        let plugin_generation = self.actions.generation();
+        let plugin_generation = self
+            .binding
+            .as_ref()
+            .map(|(_, generation)| *generation)
+            .unwrap_or_else(|| self.actions.generation());
         let supervisor = self.supervisor.clone();
         let scope = self
             .tasks

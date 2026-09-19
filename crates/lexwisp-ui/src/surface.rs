@@ -7,8 +7,8 @@ use gpui_kit::{
     WindowOptions, div, px, size,
 };
 use lexwisp_core::{
-    ActionDescriptor, ChatUiPort, ContextSnapshot, HistoryUiPort, ProviderUiPort, SettingsUiPort,
-    SurfaceKind, TextActionUiPort, ThemePreference,
+    ActionDescriptor, ChatUiPort, ContextSnapshot, HistoryUiPort, PluginManagementUiPort,
+    ProviderUiPort, SettingsUiPort, SurfaceKind, TextActionUiPort, ThemePreference,
 };
 
 use crate::control_center::ControlCenter;
@@ -43,6 +43,7 @@ pub struct SurfaceController {
     providers: Arc<dyn ProviderUiPort>,
     chat: Arc<dyn ChatUiPort>,
     history: Arc<dyn HistoryUiPort>,
+    plugin_management: Arc<dyn PluginManagementUiPort>,
     text_actions: Vec<Arc<dyn TextActionUiPort>>,
     launches: async_channel::Sender<ContextSnapshot>,
     action_descriptors: Vec<ActionDescriptor>,
@@ -56,6 +57,7 @@ pub struct SurfaceServices {
     providers: Arc<dyn ProviderUiPort>,
     chat: Arc<dyn ChatUiPort>,
     history: Arc<dyn HistoryUiPort>,
+    plugin_management: Arc<dyn PluginManagementUiPort>,
     text_actions: Vec<Arc<dyn TextActionUiPort>>,
     action_descriptors: Vec<ActionDescriptor>,
 }
@@ -66,6 +68,7 @@ impl SurfaceServices {
         providers: Arc<dyn ProviderUiPort>,
         chat: Arc<dyn ChatUiPort>,
         history: Arc<dyn HistoryUiPort>,
+        plugin_management: Arc<dyn PluginManagementUiPort>,
         text_actions: Vec<Arc<dyn TextActionUiPort>>,
         action_descriptors: Vec<ActionDescriptor>,
     ) -> Self {
@@ -74,6 +77,7 @@ impl SurfaceServices {
             providers,
             chat,
             history,
+            plugin_management,
             text_actions,
             action_descriptors,
         }
@@ -100,6 +104,7 @@ impl SurfaceController {
             providers: services.providers,
             chat: services.chat,
             history: services.history,
+            plugin_management: services.plugin_management,
             text_actions: services.text_actions,
             launches,
             action_descriptors: services.action_descriptors,
@@ -149,6 +154,26 @@ impl SurfaceController {
         self.show(SurfaceKind::ControlCenter, cx)
     }
 
+    pub fn refresh_plugins(&mut self, cx: &mut Context<Self>) {
+        if let Some(entry) = self.registry.entries.remove(&SurfaceKind::QuickShell) {
+            self.chat
+                .set_surface_visible(SurfaceKind::QuickShell, false);
+            for action in self.all_text_actions() {
+                action.set_surface_visible(false);
+            }
+            let handle = entry.handle;
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            });
+        }
+    }
+
+    fn all_text_actions(&self) -> Vec<Arc<dyn TextActionUiPort>> {
+        let mut actions = self.text_actions.clone();
+        actions.extend(self.plugin_management.action_snapshot().controllers);
+        actions
+    }
+
     pub fn handoff_to_chat_panel(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         // Attach the destination observer before the popup is detached so an in-flight
         // invocation always has a visible projection throughout the handoff.
@@ -178,7 +203,7 @@ impl SurfaceController {
     pub fn hide_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.chat
             .set_surface_visible(SurfaceKind::QuickShell, false);
-        for action in &self.text_actions {
+        for action in self.all_text_actions() {
             action.set_surface_visible(false);
         }
         if self.platform.hide(window).is_err() {
@@ -192,7 +217,7 @@ impl SurfaceController {
     fn begin_warm_retention(&mut self, cx: &mut Context<Self>) {
         self.chat
             .set_surface_visible(SurfaceKind::QuickShell, false);
-        for action in &self.text_actions {
+        for action in self.all_text_actions() {
             action.set_surface_visible(false);
         }
         let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::QuickShell) else {
@@ -256,7 +281,7 @@ impl SurfaceController {
             if matches!(shown, Ok(Ok(()))) {
                 if kind == SurfaceKind::QuickShell {
                     self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
-                    for action in &self.text_actions {
+                    for action in self.all_text_actions() {
                         action.set_surface_visible(true);
                     }
                 } else if kind == SurfaceKind::ChatPanel {
@@ -274,6 +299,7 @@ impl SurfaceController {
         let providers = self.providers.clone();
         let action_descriptors = self.action_descriptors.clone();
         let history = self.history.clone();
+        let plugin_management = self.plugin_management.clone();
         let quick_shell_factory = self.quick_shell_factory.clone();
         let chat_panel_factory = self.chat_panel_factory.clone();
         let preference = settings.snapshot().settings().theme();
@@ -306,6 +332,7 @@ impl SurfaceController {
                             settings.clone(),
                             providers.clone(),
                             history.clone(),
+                            plugin_management.clone(),
                             action_descriptors.clone(),
                             window,
                             cx,
@@ -328,7 +355,7 @@ impl SurfaceController {
         );
         if kind == SurfaceKind::QuickShell {
             self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
-            for action in &self.text_actions {
+            for action in self.all_text_actions() {
                 action.set_surface_visible(true);
             }
         } else if kind == SurfaceKind::ChatPanel {

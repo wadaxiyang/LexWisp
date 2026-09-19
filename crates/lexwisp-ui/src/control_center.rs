@@ -8,14 +8,18 @@ use gpui_kit::component::{
     scroll::ScrollableElement,
     switch::Switch,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, AppContext, ClipboardItem, Context, Entity, IntoElement,
-    ParentElement, Render, SharedString, Styled, Task, Window, div, px, relative, size,
+    AnyElement, AnyWindowHandle, AppContext, ClipboardItem, Context, Entity, ExternalPaths,
+    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
+    Styled, Task, Window, div, px, relative, size,
 };
 use lexwisp_core::{
     ActionDescriptor, ActionKind, AppSettings, ClearHistoryMode, DismissPolicy, ExecutionStatus,
     GlobalHotkey, HistoryCursor, HistoryDetail, HistoryPage, HistoryQuery, HistoryUiPort,
-    LaunchMode, ParameterKind, ProviderDraft, ProviderUiPort, SettingsUiPort, ThemePreference,
+    LaunchMode, ManagedPluginStatus, ManagedPluginSummary, ParameterKind, PluginId,
+    PluginImportPreview, PluginManagementUiPort, ProviderDraft, ProviderUiPort, SettingsUiPort,
+    ThemePreference,
 };
 
 use crate::surface::apply_theme;
@@ -24,6 +28,7 @@ pub struct ControlCenter {
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
     history: Arc<dyn HistoryUiPort>,
+    plugin_management: Arc<dyn PluginManagementUiPort>,
     actions: Vec<ActionDescriptor>,
     draft: AppSettings,
     provider_name: Entity<InputState>,
@@ -61,12 +66,19 @@ pub struct ControlCenter {
     history_task: Option<Task<()>>,
     delete_armed: bool,
     clear_armed: Option<ClearHistoryMode>,
+    plugins: Vec<ManagedPluginSummary>,
+    plugin_preview: Option<PluginImportPreview>,
+    plugin_status: SharedString,
+    plugin_busy: bool,
+    plugin_task: Option<Task<()>>,
+    uninstall_armed: Option<PluginId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ControlPage {
     Settings,
     History,
+    Plugins,
     Privacy,
 }
 
@@ -75,6 +87,7 @@ impl ControlCenter {
         settings: Arc<dyn SettingsUiPort>,
         providers: Arc<dyn ProviderUiPort>,
         history: Arc<dyn HistoryUiPort>,
+        plugin_management: Arc<dyn PluginManagementUiPort>,
         actions: Vec<ActionDescriptor>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -170,10 +183,12 @@ impl ControlCenter {
                 action_parameter_inputs.push((action.clone(), parameter.key.clone(), input));
             }
         }
+        let plugins = plugin_management.list();
         Self {
             settings,
             providers,
             history,
+            plugin_management,
             actions,
             draft,
             provider_name,
@@ -218,7 +233,212 @@ impl ControlCenter {
             history_task: None,
             delete_armed: false,
             clear_armed: None,
+            plugins,
+            plugin_preview: None,
+            plugin_status:
+                "Choose a local plugin directory or ZIP. Nothing runs before confirmation.".into(),
+            plugin_busy: false,
+            plugin_task: None,
+            uninstall_armed: None,
         }
+    }
+
+    fn preview_plugin(&mut self, source: std::path::PathBuf, cx: &mut Context<Self>) {
+        if self.plugin_busy {
+            return;
+        }
+        self.plugin_busy = true;
+        self.plugin_status = format!("Inspecting {}…", source.display()).into();
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.preview(source).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_busy = false;
+                match result {
+                    Ok(preview) => {
+                        view.plugin_status = "Preview ready. Review the source, actions, and requested permissions before installing.".into();
+                        view.plugin_preview = Some(preview);
+                    }
+                    Err(error) => {
+                        view.plugin_preview = None;
+                        view.plugin_status = format!("Package rejected: {error}").into();
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn choose_plugin(&mut self, choose_zip: bool, cx: &mut Context<Self>) {
+        if self.plugin_busy {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: choose_zip,
+            directories: !choose_zip,
+            multiple: false,
+            prompt: Some(if choose_zip {
+                "Choose plugin ZIP".into()
+            } else {
+                "Choose plugin directory".into()
+            }),
+        });
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let selection = receiver.await;
+            let _ = view.update(cx, |view, cx| match selection {
+                Ok(Ok(Some(paths))) if paths.len() == 1 => {
+                    view.preview_plugin(paths[0].clone(), cx);
+                }
+                Ok(Ok(Some(_))) => {
+                    view.plugin_status = "Choose exactly one plugin directory or ZIP.".into();
+                    cx.notify();
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    view.plugin_status = format!("Could not open picker: {error}").into();
+                    cx.notify();
+                }
+                Err(_) => {
+                    view.plugin_status = "The path picker closed unexpectedly.".into();
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn confirm_plugin(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = self.plugin_preview.take() else {
+            return;
+        };
+        self.plugin_busy = true;
+        self.plugin_status = "Installing the validated package…".into();
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.confirm(preview.token).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_busy = false;
+                view.plugins = view.plugin_management.list();
+                view.plugin_status = match result {
+                    Ok(()) => {
+                        "Plugin installed and activated. Quick Shell will use the new action list."
+                            .into()
+                    }
+                    Err(error) => {
+                        format!("Install failed; the previous version remains active: {error}")
+                            .into()
+                    }
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn cancel_plugin_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = self.plugin_preview.take() else {
+            return;
+        };
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.discard_preview(preview.token).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_status = match result {
+                    Ok(()) => "Preview cancelled; no package was installed.".into(),
+                    Err(error) => {
+                        format!("Preview cancelled; staging cleanup failed: {error}").into()
+                    }
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn set_plugin_enabled(&mut self, id: PluginId, enabled: bool, cx: &mut Context<Self>) {
+        if self.plugin_busy {
+            return;
+        }
+        self.plugin_busy = true;
+        self.plugin_status = if enabled {
+            "Enabling plugin…"
+        } else {
+            "Disabling plugin and cancelling its work…"
+        }
+        .into();
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.set_enabled(id, enabled).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_busy = false;
+                view.plugins = view.plugin_management.list();
+                view.plugin_status = match result {
+                    Ok(()) => {
+                        if enabled {
+                            "Plugin enabled.".into()
+                        } else {
+                            "Plugin disabled; running requests were cancelled.".into()
+                        }
+                    }
+                    Err(error) => format!("Plugin state change failed: {error}").into(),
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn reload_plugin(&mut self, id: PluginId, cx: &mut Context<Self>) {
+        if self.plugin_busy {
+            return;
+        }
+        self.plugin_busy = true;
+        self.plugin_status = "Validating managed plugin files before reload…".into();
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.preview_reload(id).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_busy = false;
+                match result {
+                    Ok(preview) => {
+                        view.plugin_preview = Some(preview);
+                        view.plugin_status =
+                            "Reload preview ready. Confirm to atomically switch generations."
+                                .into();
+                    }
+                    Err(error) => {
+                        view.plugin_status = format!(
+                            "Reload rejected; the current version remains unchanged: {error}"
+                        )
+                        .into()
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn uninstall_plugin(&mut self, id: PluginId, cx: &mut Context<Self>) {
+        if self.uninstall_armed.as_ref() != Some(&id) {
+            self.uninstall_armed = Some(id);
+            self.plugin_status = "Choose Uninstall again to remove the managed copy. The imported source and history are preserved.".into();
+            cx.notify();
+            return;
+        }
+        self.uninstall_armed = None;
+        self.plugin_busy = true;
+        let plugins = self.plugin_management.clone();
+        self.plugin_task = Some(cx.spawn(async move |view, cx| {
+            let result = plugins.uninstall(id).await;
+            let _ = view.update(cx, |view, cx| {
+                view.plugin_busy = false;
+                view.plugins = view.plugin_management.list();
+                view.plugin_status = match result {
+                    Ok(()) => {
+                        "Plugin uninstalled. Source files and saved history were not deleted."
+                            .into()
+                    }
+                    Err(error) => format!("Uninstall failed: {error}").into(),
+                };
+                cx.notify();
+            });
+        }));
     }
 
     fn provider_draft(&self, cx: &Context<Self>) -> ProviderDraft {
@@ -844,6 +1064,243 @@ impl ControlCenter {
             .into_any_element()
     }
 
+    fn render_plugins(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let preview = self.plugin_preview.clone().map(|preview| {
+            let permissions = preview
+                .requested_capabilities
+                .iter()
+                .map(|capability| capability.manifest_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let added = preview
+                .added_capabilities
+                .iter()
+                .map(|capability| capability.manifest_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .text_lg()
+                        .child(format!("{} · {}", preview.name, preview.version)),
+                )
+                .child(div().text_sm().child(format!("ID: {}", preview.id)))
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("Source: {}", preview.source_path.display())),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("Actions: {}", preview.actions.join(", "))),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("Requested permissions: {permissions}")),
+                )
+                .when(!added.is_empty(), |element| {
+                    element.child(
+                        div()
+                            .text_sm()
+                            .child(format!("New permissions requiring confirmation: {added}")),
+                    )
+                })
+                .when_some(preview.replaces_version.clone(), |element, version| {
+                    element.child(
+                        div()
+                            .text_sm()
+                            .child(format!("Explicitly replaces installed version {version}")),
+                    )
+                })
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("SHA-256: {}", preview.package_hash)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("confirm-plugin")
+                                .primary()
+                                .label("Confirm install / replace")
+                                .disabled(self.plugin_busy)
+                                .on_click(cx.listener(|this, _, _, cx| this.confirm_plugin(cx))),
+                        )
+                        .child(
+                            Button::new("cancel-plugin-preview")
+                                .label("Cancel")
+                                .disabled(self.plugin_busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cancel_plugin_preview(cx);
+                                })),
+                        ),
+                )
+        });
+
+        let cards = self.plugins.clone().into_iter().map(|plugin| {
+            let enabled = plugin.status == ManagedPluginStatus::Enabled;
+            let status = match plugin.status {
+                ManagedPluginStatus::Enabled => "Enabled",
+                ManagedPluginStatus::Disabled => "Disabled",
+                ManagedPluginStatus::Faulted => "Faulted",
+            };
+            let capabilities = plugin
+                .granted_capabilities
+                .iter()
+                .map(|capability| capability.manifest_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let toggle_id = plugin.id.clone();
+            let reload_id = plugin.id.clone();
+            let open_id = plugin.id.clone();
+            let uninstall_id = plugin.id.clone();
+            let uninstall_armed = self.uninstall_armed.as_ref() == Some(&plugin.id);
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_4()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_lg()
+                                .child(format!("{} · {}", plugin.name, plugin.version)),
+                        )
+                        .child(div().text_sm().child(status)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("{} · declarative", plugin.id)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .child(format!("Actions: {}", plugin.actions.join(", "))),
+                )
+                .child(div().text_sm().child(format!("Granted: {capabilities}")))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("Source: {}", plugin.source_path.display())),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("Managed copy: {}", plugin.install_path.display())),
+                )
+                .when_some(plugin.last_error.clone(), |element, error| {
+                    element.child(div().text_sm().child(format!("Last error: {error}")))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new(format!("toggle-plugin-{}", plugin.id))
+                                .label(if enabled { "Disable" } else { "Enable" })
+                                .disabled(self.plugin_busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_plugin_enabled(toggle_id.clone(), !enabled, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(format!("reload-plugin-{}", plugin.id))
+                                .label("Reload")
+                                .disabled(self.plugin_busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.reload_plugin(reload_id.clone(), cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(format!("open-plugin-{}", plugin.id))
+                                .label("Open directory")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.plugin_status =
+                                        match this.plugin_management.open_directory(&open_id) {
+                                            Ok(()) => "Opened managed plugin directory.".into(),
+                                            Err(error) => {
+                                                format!("Could not open directory: {error}").into()
+                                            }
+                                        };
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new(format!("uninstall-plugin-{}", plugin.id))
+                                .danger()
+                                .label(if uninstall_armed {
+                                    "Confirm uninstall"
+                                } else {
+                                    "Uninstall"
+                                })
+                                .disabled(self.plugin_busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.uninstall_plugin(uninstall_id.clone(), cx)
+                                })),
+                        ),
+                )
+        });
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(div().text_lg().child("Local declarative plugins"))
+            .child(
+                div()
+                    .id("plugin-drop-zone")
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child("Drop one plugin directory or ZIP here, or use the picker. A drop only opens a preview.")
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                        if paths.paths().len() == 1 {
+                            this.preview_plugin(paths.paths()[0].clone(), cx);
+                        } else {
+                            this.plugin_status = "Drop exactly one plugin directory or ZIP.".into();
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(Button::new("choose-plugin-directory").primary().label(if self.plugin_busy { "Working…" } else { "Choose directory" }).disabled(self.plugin_busy).on_click(cx.listener(|this, _, _, cx| this.choose_plugin(false, cx))))
+                    .child(Button::new("choose-plugin-zip").label("Choose ZIP").disabled(self.plugin_busy).on_click(cx.listener(|this, _, _, cx| this.choose_plugin(true, cx)))),
+            )
+            .children(preview)
+            .children(cards)
+            .when(self.plugins.is_empty(), |element| element.child(div().text_sm().text_color(cx.theme().muted_foreground).child("No third-party declarative plugins are installed.")))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.plugin_status.clone()))
+            .overflow_y_scrollbar()
+            .into_any_element()
+    }
+
     fn render_privacy(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let diagnostics = self.history.diagnostics();
         let report = format!(
@@ -911,6 +1368,15 @@ impl Render for ControlCenter {
                     })),
             )
             .child(
+                Button::new("page-plugins")
+                    .label("Plugins")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = ControlPage::Plugins;
+                        this.plugins = this.plugin_management.list();
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("page-privacy")
                     .label("Privacy & diagnostics")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -938,6 +1404,17 @@ impl Render for ControlCenter {
                 .gap_4()
                 .child(navigation)
                 .child(self.render_privacy(window, cx))
+                .into_any_element();
+        }
+        if self.page == ControlPage::Plugins {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .p_6()
+                .gap_4()
+                .child(navigation)
+                .child(self.render_plugins(window, cx))
                 .into_any_element();
         }
         let hotkeys = GlobalHotkey::ALL.into_iter().map(|hotkey| {

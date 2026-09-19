@@ -38,8 +38,9 @@ pub use ids::{AttemptId, ContextToken, ConversationId, InvocationId, MessageId};
 pub use plugin::{
     ActionDescriptor, ActionError, ActionFuture, ActionHandler, ActionId, ActionInputSource,
     ActionKind, ActionOutputPolicy, ActionParameter, ActionRequest, ActionResult, ActionUiPort,
-    Capability, DeclarativeActionDefinition, ParameterKind, PluginDescriptor, PluginId,
-    QualifiedActionId,
+    Capability, DeclarativeActionDefinition, ManagedActionSnapshot, ManagedPluginStatus,
+    ManagedPluginSummary, ParameterKind, PluginDescriptor, PluginId, PluginImportPreview,
+    PluginManagementFuture, PluginManagementUiPort, QualifiedActionId,
 };
 pub use provider::{
     CredentialError, CredentialStore, ModelProfile, ProviderConfig, ProviderDraft, ProviderError,

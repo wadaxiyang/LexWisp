@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, fmt, future::Future, pin::Pin, str::FromStr};
+use std::{
+    collections::BTreeMap, fmt, future::Future, path::PathBuf, pin::Pin, str::FromStr, sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -131,8 +133,42 @@ pub struct ActionIdError(String);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Capability {
     AiInvoke,
+    NetworkRequest,
+    SelectionRead,
+    ClipboardRead,
+    ClipboardWrite,
+    WindowRead,
     StorageRead,
     StorageWrite,
+}
+
+impl Capability {
+    pub const fn manifest_name(self) -> &'static str {
+        match self {
+            Self::AiInvoke => "ai.invoke",
+            Self::NetworkRequest => "network.request",
+            Self::SelectionRead => "selection.read",
+            Self::ClipboardRead => "clipboard.read",
+            Self::ClipboardWrite => "clipboard.write",
+            Self::WindowRead => "window.read",
+            Self::StorageRead => "storage.read",
+            Self::StorageWrite => "storage.write",
+        }
+    }
+
+    pub fn parse_manifest(value: &str) -> Result<Self, String> {
+        match value {
+            "ai.invoke" => Ok(Self::AiInvoke),
+            "network.request" => Ok(Self::NetworkRequest),
+            "selection.read" => Ok(Self::SelectionRead),
+            "clipboard.read" => Ok(Self::ClipboardRead),
+            "clipboard.write" => Ok(Self::ClipboardWrite),
+            "window.read" => Ok(Self::WindowRead),
+            "storage.read" => Ok(Self::StorageRead),
+            "storage.write" => Ok(Self::StorageWrite),
+            _ => Err(format!("unknown capability '{value}'")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,6 +345,71 @@ pub trait ActionHandler: Send + Sync {
 
 pub trait ActionUiPort: Send + Sync {
     fn invoke<'a>(&'a self, action: QualifiedActionId, request: ActionRequest) -> ActionFuture<'a>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ManagedPluginStatus {
+    Enabled,
+    Disabled,
+    Faulted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagedPluginSummary {
+    pub id: PluginId,
+    pub name: String,
+    pub version: String,
+    pub source_path: PathBuf,
+    pub install_path: PathBuf,
+    pub package_hash: String,
+    pub generation: u64,
+    pub status: ManagedPluginStatus,
+    pub granted_capabilities: Vec<Capability>,
+    pub actions: Vec<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginImportPreview {
+    pub token: String,
+    pub id: PluginId,
+    pub name: String,
+    pub version: String,
+    pub source_path: PathBuf,
+    pub package_hash: String,
+    pub requested_capabilities: Vec<Capability>,
+    pub added_capabilities: Vec<Capability>,
+    pub actions: Vec<String>,
+    pub replaces_version: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ManagedActionSnapshot {
+    pub generation: u64,
+    pub descriptors: Vec<ActionDescriptor>,
+    pub controllers: Vec<Arc<dyn crate::TextActionUiPort>>,
+}
+
+pub type PluginManagementFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+pub trait PluginManagementUiPort: Send + Sync {
+    fn list(&self) -> Vec<ManagedPluginSummary>;
+    fn action_snapshot(&self) -> ManagedActionSnapshot;
+    fn preview<'a>(&'a self, source: PathBuf) -> PluginManagementFuture<'a, PluginImportPreview>;
+    fn confirm<'a>(&'a self, token: String) -> PluginManagementFuture<'a, ()>;
+    fn discard_preview<'a>(&'a self, token: String) -> PluginManagementFuture<'a, ()>;
+    fn set_enabled<'a>(
+        &'a self,
+        plugin_id: PluginId,
+        enabled: bool,
+    ) -> PluginManagementFuture<'a, ()>;
+    fn preview_reload<'a>(
+        &'a self,
+        plugin_id: PluginId,
+    ) -> PluginManagementFuture<'a, PluginImportPreview>;
+    fn uninstall<'a>(&'a self, plugin_id: PluginId) -> PluginManagementFuture<'a, ()>;
+    fn open_directory(&self, plugin_id: &PluginId) -> Result<(), String>;
 }
 
 #[cfg(test)]

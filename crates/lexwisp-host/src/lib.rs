@@ -4,6 +4,7 @@ mod execution;
 mod favorites;
 mod history;
 mod invocation;
+mod plugin_manager;
 mod providers;
 mod registry;
 mod settings;
@@ -14,7 +15,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use async_channel::Sender;
 use lexwisp_core::{
     ActionUiPort, AppSettings, ChatHistoryPort, ChatRunPort, ContextUiPort, FavoriteUiPort,
-    HistoryUiPort, HostUiCommand, PluginId, ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
+    HistoryUiPort, HostUiCommand, PluginId, PluginManagementUiPort, ProviderUiPort, SettingsUiPort,
+    TaskOwner, TextRunPort,
 };
 use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
@@ -34,6 +36,7 @@ pub use execution::ExecutionStore;
 pub use favorites::FavoriteService;
 pub use history::HistoryService;
 pub use invocation::InvocationSupervisor;
+pub use plugin_manager::PluginManager;
 pub use providers::{ProviderRegistry, ProviderService};
 
 #[derive(Clone)]
@@ -64,6 +67,7 @@ pub struct HostHandles {
     chat_history: Arc<dyn ChatHistoryPort>,
     executions: Arc<ExecutionStore>,
     supervisor: Arc<InvocationSupervisor>,
+    plugin_manager: PluginManager,
     ui_commands: HostUiCommandPort,
 }
 
@@ -114,6 +118,14 @@ impl HostHandles {
 
     pub fn executions(&self) -> Arc<ExecutionStore> {
         self.executions.clone()
+    }
+
+    pub fn plugin_management(&self) -> Arc<dyn PluginManagementUiPort> {
+        Arc::new(self.plugin_manager.clone())
+    }
+
+    pub fn activate_installed_plugins(&self) -> Result<(), String> {
+        self.plugin_manager.activate_installed()
     }
 
     pub fn chat_run_port(&self, plugin_id: PluginId) -> Arc<dyn ChatRunPort> {
@@ -211,14 +223,24 @@ impl Host {
         ));
         let action_ui: Arc<dyn ActionUiPort> = Arc::new(ActionUiService::new(actions.clone()));
         let history: Arc<dyn HistoryUiPort> = Arc::new(HistoryService::new(
-            content,
+            content.clone(),
             executions.clone(),
             favorite_service,
             action_ui.clone(),
             settings_service,
             process_tasks,
-            data_directory,
+            data_directory.clone(),
         ));
+        let plugin_manager = PluginManager::new(
+            &data_directory,
+            content,
+            plugins.clone(),
+            capabilities.clone(),
+            supervisor.clone(),
+            tasks.clone(),
+            settings.clone(),
+            ui_commands.clone(),
+        )?;
         let handles = HostHandles {
             plugins,
             actions,
@@ -233,6 +255,7 @@ impl Host {
             chat_history,
             executions,
             supervisor: supervisor.clone(),
+            plugin_manager,
             ui_commands: HostUiCommandPort {
                 sender: ui_commands,
             },

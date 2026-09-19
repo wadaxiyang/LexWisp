@@ -9,6 +9,7 @@ use lexwisp_core::{
     QualifiedActionId, SettingsUiPort, StorageState, TextActionError, TextActionSnapshot,
     TextActionUiPort, TextInvocationRequest, TextRunPort,
 };
+use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -77,24 +78,54 @@ struct ManifestOutput {
 pub struct DeclarativePackage {
     pub plugin: PluginDescriptor,
     pub actions: Vec<ActionDescriptor>,
+    pub version: Version,
 }
 
 impl DeclarativePackage {
     pub fn parse(manifest: &str, prompt_name: &str, prompt: &str) -> Result<Self, String> {
+        Self::parse_with_prompts(manifest, |name| {
+            (name == prompt_name)
+                .then(|| prompt.to_owned())
+                .ok_or_else(|| format!("prompt file '{name}' was not supplied"))
+        })
+    }
+
+    pub fn parse_with_prompts(
+        manifest: &str,
+        mut read_prompt: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<Self, String> {
         let manifest: Manifest = toml::from_str(manifest).map_err(|error| error.to_string())?;
-        if manifest.schema_version != 1
-            || manifest.plugin.kind != "declarative"
-            || manifest.plugin.host_api != "^1.0"
-            || manifest.plugin.version.trim().is_empty()
-        {
-            return Err(
-                "unsupported declarative package schema, kind, version, or Host API".into(),
-            );
+        if manifest.schema_version != 1 {
+            return Err(format!(
+                "unsupported schema_version {}",
+                manifest.schema_version
+            ));
         }
+        if manifest.plugin.kind != "declarative" {
+            return Err("Stage 6 accepts only kind = 'declarative' packages".into());
+        }
+        let host_api = VersionReq::parse(&manifest.plugin.host_api)
+            .map_err(|error| format!("invalid Host API requirement: {error}"))?;
+        if !host_api.matches(&Version::new(1, 0, 0)) {
+            return Err(format!(
+                "Host API requirement '{}' does not include 1.0",
+                manifest.plugin.host_api
+            ));
+        }
+        let version = Version::parse(&manifest.plugin.version)
+            .map_err(|error| format!("invalid plugin version: {error}"))?;
         if !manifest.capabilities.optional.is_empty()
             || manifest.capabilities.required != ["ai.invoke"]
         {
-            return Err("built-in declarative actions may request only ai.invoke".into());
+            for capability in manifest
+                .capabilities
+                .required
+                .iter()
+                .chain(&manifest.capabilities.optional)
+            {
+                Capability::parse_manifest(capability)?;
+            }
+            return Err("Stage 6 declarative actions must require only ai.invoke".into());
         }
         let plugin_id = PluginId::parse(manifest.plugin.id).map_err(|error| error.to_string())?;
         let plugin = PluginDescriptor::new(
@@ -105,7 +136,6 @@ impl DeclarativePackage {
         let mut actions = Vec::new();
         for action in manifest.actions {
             if action.input_kind != "text"
-                || action.prompt != prompt_name
                 || action.model_profile != "Fast"
                 || action.output.format != "text"
             {
@@ -113,6 +143,7 @@ impl DeclarativePackage {
                     "unsupported declarative action input, prompt, profile, or output".into(),
                 );
             }
+            let prompt = read_prompt(&action.prompt)?;
             let allowed_sources = action
                 .allowed_sources
                 .into_iter()
@@ -154,7 +185,7 @@ impl DeclarativePackage {
                 ActionId::parse(action.id).map_err(|error| error.to_string())?,
                 action.name,
                 DeclarativeActionDefinition {
-                    prompt: prompt.to_owned(),
+                    prompt,
                     parameters,
                     allowed_sources,
                     dismiss_policy,
@@ -169,7 +200,11 @@ impl DeclarativePackage {
         if actions.is_empty() {
             return Err("declarative package has no actions".into());
         }
-        Ok(Self { plugin, actions })
+        Ok(Self {
+            plugin,
+            actions,
+            version,
+        })
     }
 }
 

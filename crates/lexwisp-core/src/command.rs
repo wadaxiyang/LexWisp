@@ -11,5 +11,6 @@ pub enum HostUiCommand {
     ShowQuickShell,
     ShowChatPanel,
     ShowControlCenter,
+    RefreshPlugins,
     Quit,
 }

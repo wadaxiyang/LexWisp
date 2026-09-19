@@ -120,6 +120,7 @@ fn run() -> Result<(), String> {
     let context_ui = handles.context();
     let favorites = handles.favorites();
     let history = handles.history();
+    let plugin_management = handles.plugin_management();
     let plugin = chat_plugin();
     let action = chat_action();
     let chat_controller = ChatController::new(
@@ -174,6 +175,7 @@ fn run() -> Result<(), String> {
             package.plugin.requested_capabilities().iter().copied(),
         );
     }
+    handles.activate_installed_plugins()?;
     let (launch_sender, launch_receiver) = async_channel::bounded(8);
     let quick_shell_factory: QuickShellViewFactory = {
         let chat = chat.clone();
@@ -184,8 +186,14 @@ fn run() -> Result<(), String> {
         let favorites = favorites.clone();
         let descriptors = descriptors.clone();
         let text_actions = text_actions.clone();
+        let plugin_management = plugin_management.clone();
         let launch_receiver = launch_receiver.clone();
         Rc::new(move |controller, window, cx| {
+            let managed = plugin_management.action_snapshot();
+            let mut current_descriptors = descriptors.clone();
+            current_descriptors.extend(managed.descriptors);
+            let mut current_text_actions = text_actions.clone();
+            current_text_actions.extend(managed.controllers);
             cx.new(|cx| {
                 QuickShell::new(
                     controller,
@@ -195,8 +203,8 @@ fn run() -> Result<(), String> {
                     actions.clone(),
                     chat.clone(),
                     action.clone(),
-                    descriptors.clone(),
-                    text_actions.clone(),
+                    current_descriptors,
+                    current_text_actions,
                     launch_receiver.clone(),
                     window,
                     cx,
@@ -227,6 +235,7 @@ fn run() -> Result<(), String> {
                         providers.clone(),
                         chat.clone(),
                         history.clone(),
+                        plugin_management.clone(),
                         text_actions.clone(),
                         descriptors.clone(),
                     ),
@@ -282,6 +291,11 @@ fn run() -> Result<(), String> {
                                     "Could not open Control Center.\n\n{error:#}"
                                 ));
                             }
+                        }
+                        HostUiCommand::RefreshPlugins => {
+                            let _ = surface_for_commands.update(cx, |surfaces, cx| {
+                                surfaces.refresh_plugins(cx);
+                            });
                         }
                         HostUiCommand::Quit => {
                             cx.update(|cx| cx.quit());

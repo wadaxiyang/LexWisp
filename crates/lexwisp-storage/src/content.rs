@@ -34,6 +34,17 @@ pub enum StorageError {
 }
 
 enum StorageCommand {
+    ListPlugins {
+        reply: mpsc::Sender<Result<Vec<StoredPlugin>, StorageError>>,
+    },
+    SavePlugin {
+        plugin: StoredPlugin,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    RemovePlugin {
+        plugin_id: String,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
     Checkpoint {
         checkpoint: Box<ExecutionCheckpoint>,
         receipt: Option<mpsc::Sender<Result<(), StorageError>>>,
@@ -99,6 +110,20 @@ enum StorageCommand {
     Shutdown,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub package_hash: String,
+    pub source_path: String,
+    pub install_path: String,
+    pub enabled: bool,
+    pub generation: u64,
+    pub capabilities: Vec<String>,
+    pub last_error: Option<String>,
+}
+
 pub struct WriteReceipt(mpsc::Receiver<Result<(), StorageError>>);
 
 impl WriteReceipt {
@@ -114,6 +139,33 @@ pub struct ContentStore {
 }
 
 impl ContentStore {
+    pub fn list_plugins(&self) -> Result<Vec<StoredPlugin>, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::ListPlugins { reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn save_plugin(&self, plugin: StoredPlugin) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::SavePlugin { plugin, reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn remove_plugin(&self, plugin_id: &str) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::RemovePlugin {
+                plugin_id: plugin_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
     pub fn enqueue(
         &self,
         checkpoint: ExecutionCheckpoint,
@@ -387,6 +439,15 @@ fn worker_main(
     };
     while let Ok(command) = receiver.recv_blocking() {
         match command {
+            StorageCommand::ListPlugins { reply } => {
+                let _ = reply.send(list_plugins(&connection));
+            }
+            StorageCommand::SavePlugin { plugin, reply } => {
+                let _ = reply.send(save_plugin(&mut connection, &plugin));
+            }
+            StorageCommand::RemovePlugin { plugin_id, reply } => {
+                let _ = reply.send(remove_plugin(&mut connection, &plugin_id));
+            }
             StorageCommand::Checkpoint {
                 checkpoint,
                 receipt,
@@ -552,6 +613,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
         && version != 2
         && version != 3
         && version != 4
+        && version != 5
     {
         return Err(StorageError::Start(format!(
             "database schema version {version} is not supported"
@@ -643,6 +705,25 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  generation INTEGER NOT NULL
              );
              INSERT OR IGNORE INTO retention_state(singleton, generation) VALUES (1, 0);
+             CREATE TABLE IF NOT EXISTS installed_plugins (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 version TEXT NOT NULL,
+                 package_hash TEXT NOT NULL,
+                 source_path TEXT NOT NULL,
+                 install_path TEXT NOT NULL,
+                 enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+                 generation INTEGER NOT NULL,
+                 last_error TEXT,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS plugin_grants (
+                 plugin_id TEXT NOT NULL REFERENCES installed_plugins(id) ON DELETE CASCADE,
+                 package_hash TEXT NOT NULL,
+                 generation INTEGER NOT NULL,
+                 capability TEXT NOT NULL,
+                 PRIMARY KEY(plugin_id, capability)
+             );
              UPDATE executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
                  WHERE status IN ('queued', 'running', 'cancelling');
              UPDATE action_executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
@@ -669,9 +750,134 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
             .map_err(sql_error)?;
     }
     connection
-        .execute("UPDATE schema_version SET version = 4", [])
+        .execute("UPDATE schema_version SET version = 5", [])
         .map_err(sql_error)?;
     Ok(connection)
+}
+
+fn list_plugins(connection: &Connection) -> Result<Vec<StoredPlugin>, StorageError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, name, version, package_hash, source_path, install_path, enabled,
+                    generation, last_error
+             FROM installed_plugins ORDER BY name COLLATE NOCASE, id",
+        )
+        .map_err(sql_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .map_err(sql_error)?;
+    let mut plugins = Vec::new();
+    for row in rows {
+        let (
+            id,
+            name,
+            version,
+            package_hash,
+            source_path,
+            install_path,
+            enabled,
+            generation,
+            last_error,
+        ) = row.map_err(sql_error)?;
+        let mut grants = connection
+            .prepare(
+                "SELECT capability FROM plugin_grants
+                 WHERE plugin_id = ?1 AND package_hash = ?2 AND generation = ?3
+                 ORDER BY capability",
+            )
+            .map_err(sql_error)?;
+        let capabilities = grants
+            .query_map(params![id, package_hash, generation], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(sql_error)?
+            .map(|value| value.map_err(sql_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        plugins.push(StoredPlugin {
+            id,
+            name,
+            version,
+            package_hash,
+            source_path,
+            install_path,
+            enabled,
+            generation: u64::try_from(generation)
+                .map_err(|_| StorageError::Sql("negative plugin generation".into()))?,
+            capabilities,
+            last_error,
+        });
+    }
+    Ok(plugins)
+}
+
+fn save_plugin(connection: &mut Connection, plugin: &StoredPlugin) -> Result<(), StorageError> {
+    let generation = sqlite_u64(plugin.generation, "plugin generation")?;
+    let transaction = connection.transaction().map_err(sql_error)?;
+    transaction
+        .execute(
+            "INSERT INTO installed_plugins(
+                 id, name, version, package_hash, source_path, install_path, enabled,
+                 generation, last_error, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = excluded.name,
+                 version = excluded.version,
+                 package_hash = excluded.package_hash,
+                 source_path = excluded.source_path,
+                 install_path = excluded.install_path,
+                 enabled = excluded.enabled,
+                 generation = excluded.generation,
+                 last_error = excluded.last_error,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                plugin.id,
+                plugin.name,
+                plugin.version,
+                plugin.package_hash,
+                plugin.source_path,
+                plugin.install_path,
+                plugin.enabled,
+                generation,
+                plugin.last_error,
+                now_ms(),
+            ],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "DELETE FROM plugin_grants WHERE plugin_id = ?1",
+            [&plugin.id],
+        )
+        .map_err(sql_error)?;
+    for capability in &plugin.capabilities {
+        transaction
+            .execute(
+                "INSERT INTO plugin_grants(plugin_id, package_hash, generation, capability)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![plugin.id, plugin.package_hash, generation, capability],
+            )
+            .map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)
+}
+
+fn remove_plugin(connection: &mut Connection, plugin_id: &str) -> Result<(), StorageError> {
+    connection
+        .execute("DELETE FROM installed_plugins WHERE id = ?1", [plugin_id])
+        .map_err(sql_error)?;
+    Ok(())
 }
 
 fn write_checkpoint(
@@ -1846,6 +2052,33 @@ mod tests {
             .expect("detail loads")
             .expect("favorite remains");
         assert_eq!(detail.output, "second");
+        owner.shutdown();
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn plugin_grants_round_trip_with_hash_and_generation() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let expected = StoredPlugin {
+            id: "org.example.fixture".into(),
+            name: "Fixture".into(),
+            version: "1.2.3".into(),
+            package_hash: "abc123".into(),
+            source_path: r"C:\fixtures\插件".into(),
+            install_path: r"C:\data\plugins\fixture".into(),
+            enabled: true,
+            generation: 9,
+            capabilities: vec!["ai.invoke".into()],
+            last_error: None,
+        };
+        store.save_plugin(expected.clone()).expect("plugin saves");
+        assert_eq!(store.list_plugins().expect("plugins load"), vec![expected]);
+        store
+            .remove_plugin("org.example.fixture")
+            .expect("plugin removes");
+        assert!(store.list_plugins().expect("plugins load").is_empty());
         owner.shutdown();
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");

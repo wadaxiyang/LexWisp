@@ -414,3 +414,68 @@ Runnable directory: `dist/stage-05/`. Archive: `dist/LexWisp-stage-05-windows-x6
 The `computer-use` skill, guidance, API reference, and confirmations were read before automation. Following the user-provided workaround, the session imported `@oai/sky` directly and called `sky.list_apps()` without calling `cua.getState()`. The import succeeded, but the initial call, one delayed lightweight retry, and one reset/reinitialize retry all returned exactly `Trusted RPC service is not configured: sky`. Per the skill's bounded recovery guidance, no further repeated inventory calls were made.
 
 Consequently, button-level Control Center navigation, search/copy/confirmation UI, Chinese IME interaction, and a real Provider's concurrent streaming/retry remain pending. The direct error indicates missing trusted-RPC host configuration rather than a LexWisp failure. Windows 10, alternate DPI/multi-monitor layouts, clean-machine portability, prolonged resource/GPU measurements, disk-full UI observation, and Credential Manager migration to a second machine remain later/manual gates; the README and diagnostics page explicitly state that keys do not migrate with portable data.
+
+## Stage 6 — 2026-09-19
+
+Status: **implemented and packaged; locked formatting/check/Clippy/test gates, the native hotkey fixture, Stage 06 Release launch, schema-5 plugin persistence, declarative package import/preview/activation, Quick Shell registration, disable/re-enable, changed-content reload, failed-reload rollback, and native directory/ZIP picker paths passed. A real Provider invocation/cancellation, native drag-and-drop, native uninstall confirmation, Windows 10, and clean-machine acceptance remain pending and are not represented as complete.**
+
+### Delivered third-party declarative plugin management
+
+- Added a typed plugin-management boundary in `lexwisp-core` and a Host-owned `PluginManager`. UI receives typed summaries/previews/actions rather than Host implementations. Managed packages load after compiled built-ins during startup and register through the same registry, grants, scoped ports, Invocation supervision, result storage, and Quick Shell projection.
+- Implemented directory and ZIP import into a private staging area. Import is preview-only until the user confirms; previews are single-use and stale/cancelled staging is removed. Stage 6 accepts only declarative packages and rejects script payloads.
+- Enforced limits before activation: 10 MiB archive, 32 MiB expanded content, 256 entries, 256 KiB manifest, 2 MiB prompt files, and 1 MiB icon. ZIP and directory validation reject traversal, absolute/drive/UNC/ADS/backslash paths, Windows reserved names, trailing dots/spaces, case-folded collisions, links/reparse points, unsupported entries, and undeclared payloads.
+- Added strict declarative manifests with semantic versions, Host API version requirements, package/action identity, per-action prompt files, parameters, sources, outputs, and requested capabilities. Unknown fields, variables, parameter kinds, sources, actions, capabilities, or incompatible Host API requirements fail before installation. The documented `academic-polish` example is also a parser fixture.
+- Content is SHA-256 addressed under `%data%/plugins/<id>/<version>-<hash-prefix>`. Replacing/reloading is explicit. Registry replacement is atomic; storage/grants are rolled back if activation fails. Reload validates changed content before swapping, while an invalid reload preserves the active generation.
+- Extended SQLite to schema 5 with `installed_plugins` and `plugin_grants`, including content hash, generation, status, source, and requested/granted capability state. Grants are bound to the exact plugin ID, content hash, and generation; stale scoped handles cannot retain authority after reload.
+- Disable rejects new work, advances package generation, revokes grants, cancels that plugin's active Invocations, detaches registry/UI projections, and refreshes Quick Shell. Re-enable revalidates unchanged managed content. Uninstall removes only the Host-managed copy and metadata; the original import source and history/results are outside its deletion scope.
+- Added a real GPUI Kit Plugins page. Only this page accepts external path drops. It displays status, source/managed paths, version/type, actions, capabilities, grants, content hash, validation errors, and preview changes. Install/replace/reload, enable/disable, open directory, and two-step uninstall are intent callbacks. Native acceptance exposed that one mixed file/folder picker opened in folder mode, so the final UI uses separate **Choose directory** and **Choose ZIP** buttons with mutually exclusive native picker options.
+- Added `docs/plugin-schema.md`, the packaged `academic-polish-example.zip`, and Stage 06 README/package documentation. The single package script keeps an explicit runtime allowlist and excludes settings, databases, logs, caches, credentials, and developer source.
+
+### Commands and automated evidence
+
+The final native Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **50 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real-hotkey replacement fixture passed.
+- New coverage proves strict parsing of the shipped example, rejection of malformed TOML/unknown fields/dangerous paths/script payloads/oversized ZIPs, atomic registry replacement, hash-and-generation-bound grants, and installed-plugin/grant persistence round trips.
+- Existing fragmented/truncated SSE, cancellation, checkpoint/retention barriers, history paging, settings/credentials, conversation state, manifest execution, and QuickJS dependency probes remain green.
+
+### Native Windows acceptance
+
+The `computer-use` skill and its required references were read before automation. The user-provided direct `node_repl` plus `@oai/sky` path now works: `sky.list_apps()` enumerated Windows applications and the same runtime inspected and controlled the packaged LexWisp process. This supersedes the Stage 5 host-configuration blocker for this machine; `cua.getState()` was not repeatedly retried.
+
+From an actual `C:\123\CODE\LexWisp\dist\stage-06\LexWisp.exe` launch, native interaction verified:
+
+- navigation to Plugins, directory selection, preview of ID/version/actions/`ai.invoke`/new permission/SHA-256, and explicit confirmation;
+- a second instance exiting 0 and waking Quick Shell, where `Academic Polish` appeared with its text and enum parameter controls;
+- disable destroying the stale Quick Shell projection, re-enable restoring the package, and the next Quick Shell reflecting it;
+- modifying the managed prompt, reloading through a same-ID/version preview with a new hash, and switching to the new managed content generation;
+- corrupting the managed manifest, observing the TOML unknown-field error, and confirming the prior enabled package/action remained active after the failed reload;
+- the final two-button build showing both directory and ZIP import entry points, with **Choose ZIP** opening the native file picker labelled `Choose plugin ZIP` rather than a folder picker.
+
+The acceptance database reported schema version 5 and persisted `org.example.academic-polish` plus its generation/hash-bound `ai.invoke` grant during the management run. The final packaging run then rebuilt a clean staging directory; no imported plugin or generated data is included in the archive.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500; 34,132,275,200 bytes RAM; 96-DPI baseline |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Final Settings point sample | Working set 69,464,064 bytes; Private Bytes 86,896,640; 578 handles; 56 threads; responsive |
+| Release executable | 34,064,896 bytes; SHA-256 `46849bda75618f3977e70e790d21bcf003a44b4b963ceacd8ec721d4ed14cfd7` |
+| Release ZIP | 13,115,365 bytes; SHA-256 `47313845e7c6766d1fa5ee710418fd865d500bb9744a76c96283af7d8d72a339` |
+
+Runnable directory: `dist/stage-06/`. Archive: `dist/LexWisp-stage-06-windows-x64.zip`, with an adjacent matching checksum. Its exact entries are `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, `plugin-schema.md`, `academic-polish-example.zip`, and `THIRD-PARTY-NOTICES.txt`. The final desktop process was stopped after acceptance. Point measurements are not leak/GPU/p95 claims; no working-set trimming was used.
+
+### Pending acceptance
+
+- No user-authorized Provider key was configured in the clean staged copy, so a real third-party action stream and disabling/reloading during an active paid request remain pending. Automatic tests cover scoped authorization, supervision, terminal-state rules, cancellation plumbing, SSE boundaries, and partial-result preservation but do not substitute for that native Provider gate.
+- Native drag-and-drop and the destructive uninstall confirmation were not exercised. The directory and ZIP pickers, install, replace/reload, disable, and re-enable paths were exercised; automated tests cover managed-path validation and persistence/registry rollback.
+- Windows 10, alternate DPI/multi-monitor layouts, alternate IMEs, clean-machine portability, long-run resource/GPU measurements, disk-full behavior, and malicious-package corpus expansion remain later/manual gates.
