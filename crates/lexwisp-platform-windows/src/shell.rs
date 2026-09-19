@@ -51,8 +51,9 @@ const HOTKEY_PRIMARY: i32 = 1;
 const HOTKEY_REPLACEMENT: i32 = 2;
 const TRAY_ID: u32 = 1;
 const MENU_QUICK_SHELL: usize = 100;
-const MENU_SETTINGS: usize = 101;
-const MENU_EXIT: usize = 102;
+const MENU_CHAT_PANEL: usize = 101;
+const MENU_SETTINGS: usize = 102;
+const MENU_EXIT: usize = 103;
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const RUN_VALUE: &str = "LexWisp";
 
@@ -472,9 +473,11 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
             return;
         }
         let quick = wide("Open Quick Shell");
+        let chat = wide("Open Chat");
         let settings = wide("Settings");
         let exit = wide("Exit LexWisp");
         AppendMenuW(menu, MF_STRING, MENU_QUICK_SHELL, quick.as_ptr());
+        AppendMenuW(menu, MF_STRING, MENU_CHAT_PANEL, chat.as_ptr());
         AppendMenuW(menu, MF_STRING, MENU_SETTINGS, settings.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
@@ -493,6 +496,7 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
         DestroyMenu(menu);
         let command = match selected {
             MENU_QUICK_SHELL => Some(HostUiCommand::ShowQuickShell),
+            MENU_CHAT_PANEL => Some(HostUiCommand::ShowChatPanel),
             MENU_SETTINGS => Some(HostUiCommand::ShowControlCenter),
             MENU_EXIT => Some(HostUiCommand::Quit),
             _ => None,

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ConversationId, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId};
+use crate::{
+    AttemptId, ConversationId, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +66,9 @@ pub struct ExecutionCheckpoint {
 #[derive(Clone, Debug)]
 pub struct ChatCheckpoint {
     pub conversation_title: String,
+    pub model_preference: crate::ChatModelPreference,
     pub user_ordinal: u64,
     pub assistant_ordinal: u64,
+    pub attempt_id: AttemptId,
+    pub reply_to_user_id: MessageId,
 }

@@ -34,6 +34,8 @@ pub struct ProviderConfig {
     credential_ref: Option<String>,
     model_ids: Vec<String>,
     stream: bool,
+    #[serde(default = "default_context_budget")]
+    context_budget: usize,
 }
 
 impl ProviderConfig {
@@ -52,6 +54,7 @@ impl ProviderConfig {
             credential_ref,
             model_ids,
             stream,
+            context_budget: default_context_budget(),
         }
     }
 
@@ -78,6 +81,19 @@ impl ProviderConfig {
     pub const fn stream(&self) -> bool {
         self.stream
     }
+
+    pub const fn context_budget(&self) -> usize {
+        self.context_budget
+    }
+
+    pub fn with_context_budget(mut self, context_budget: usize) -> Self {
+        self.context_budget = context_budget;
+        self
+    }
+}
+
+const fn default_context_budget() -> usize {
+    8_192
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

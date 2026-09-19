@@ -302,3 +302,60 @@ The `computer-use` skill was initialized twice as prescribed, including one rese
 - open Kit menus/dialogs and a Chinese IME candidate window during generation and prove none is treated as Surface dismissal;
 - replace a still-valid Notepad selection, then switch/change/expire the original target and prove LexWisp copies without writing to the wrong application;
 - verify target applications at different integrity levels, complex multi-format clipboard contents, Windows 10, alternative IMEs, multi-monitor/DPI coordinates, resource trends, GPU memory, and clean-machine portability at their later acceptance gates.
+
+## Stage 4 — 2026-09-19
+
+Status: **implemented and packaged; all locked build/test/static gates, the native hotkey fixture, staged Release startup, single-instance wake, schema-3 creation, and persisted-conversation restart recovery passed. Native button-level Chat Panel/handoff/IME interaction and live-provider parallel-stream checks remain pending because Windows Computer Use again exposed no applications and no user-authorized compatible Provider was available.** These unavailable gates are not represented as complete.
+
+### Delivered multi-conversation Chat
+
+- Expanded the compiled Chat plugin's single `ChatController` into a stable-ID conversation index with create, deterministic initial naming, rename, switch, delete, startup restore, per-conversation model preference, and one independently supervised active invocation per conversation. One conversation rejects a competing generation while different conversations can prepare independently; execution observations route by conversation and assistant-message IDs even when another conversation is active.
+- Regeneration reuses the user message but creates a new `AttemptId`, assistant `MessageId`, ordinal, and Invocation. Old attempts remain in the authoritative message history and SQLite. Context assembly admits only the latest completed assistant attempt for each user round, never a cancelled/failed partial attempt, removes complete oldest rounds against the selected Provider/model's client-side estimated budget, reports pruning, and rejects an oversized current input without truncation.
+- Extended the OpenAI-compatible Provider configuration with a backward-compatible `context_budget` value (default 8,192 estimated tokens). Host resolves the selected model and exposes only its numeric budget through the scoped Chat port; Chat retains ownership of conversation semantics and context selection.
+- Added schema 3 columns for conversation model preference and assistant attempt/reply identity plus a `conversation_deletions` tombstone table. Conversation deletion first establishes a durable barrier so late checkpoints cannot recreate deleted content; restoring reconstructs titles, models, message order, attempts, replies, and terminal/partial status. Version 1/2 databases migrate in place; a future schema is still rejected before writes.
+- Added a native independent Chat Panel using the locked GPUI Kit 0.6.1 `Root`, `Input`, `Textarea`, `Radio`, dialog, virtual list, `MessageScroller`, message/bubble, selectable Markdown, and clipboard components. Its conversation sidebar and transcript are virtualized; it provides New chat, rename, confirmed delete, model preference, Send, Stop, Regenerate, full-answer copy, per-fenced-code-block copy, context-budget feedback, and jump-to-latest behavior.
+- Quick Shell and Chat Panel observe the same controller and shared message renderer. `SurfaceController::handoff_to_chat_panel` shows/attaches the Panel before hiding/detaching Quick Shell, so it changes only projections and never invokes Chat again. Closing the Panel detaches only that surface and does not cancel Host work. The tray now has an explicit Chat Panel command.
+- Snapshot delivery remains bounded but evicts a stale queued projection before retrying the newest one; this prevents a terminal state from being stranded behind streaming updates. Hidden windows still receive no refresh churn and reconstruct from the latest versioned snapshot when shown.
+- Updated the main README and the single allowlisted packaging script for Stage 04. The ZIP contains only `LexWisp.exe`, the app-local VC runtime, `portable.flag`, README, and generated third-party notices; it contains no settings, database, logs, caches, or credentials.
+
+### Commands and automated evidence
+
+The following final commands passed on native Windows x64:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **37 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real-hotkey replacement fixture passed.
+- New controller coverage proves stable conversation IDs, retained regeneration attempts, same-conversation serialization, different-conversation independence, partial-attempt exclusion, complete-round budget pruning/current-input rejection, and recovery of the newest snapshot after bounded-channel pressure.
+- New storage coverage proves conversation/model/attempt restoration and deletion barriers against late checkpoints. The existing SSE boundary, truncation/partial, cancellation, checkpoint coalescing, schema-forward rejection, settings, manifest, credential, and QuickJS probes remain green.
+
+### Staged Release smoke and artifacts
+
+Launched `C:\123\CODE\LexWisp\dist\stage-04\LexWisp.exe` from the actual staging directory. First launch exposed a responsive `LexWisp · Settings` window. A second process exited 0 within five seconds and woke `LexWisp · Quick Shell` in the original process. The portable database reported schema version 3 and the seven expected tables: `action_executions`, `conversation_deletions`, `conversations`, `executions`, `favorites`, `messages`, and `schema_version`. After stopping and restarting the staged build, the conversation count remained 1 rather than creating a replacement conversation, providing a storage-level recovery smoke. Final staged process count was zero; because cleanup used `Stop-Process`, it is not claimed as a fresh explicit-quit UI test.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500; 34,132,275,200 bytes visible RAM; WindowMetrics AppliedDPI 96 |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Final Settings window | Working set 71,249,920 bytes; Private Bytes 83,570,688; 576 handles; 53 threads; responsive |
+| Release executable | 32,517,632 bytes; SHA-256 `fa202c66539dff32b813b23be341ff728d88a96aba0dfb982afaeaa4b45d49d5` |
+| Release ZIP | 12,584,793 bytes; SHA-256 `b32085cca21af2a77358673683f4fed4b7182e732c194cbabe084e9c9b32ccf2` |
+
+Runnable directory: `dist/stage-04/`. Archive: `dist/LexWisp-stage-04-windows-x64.zip`, with adjacent checksum. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
+
+### Pending native acceptance
+
+The `computer-use` skill was read and initialized as required. Two lightweight inventory attempts plus one reset/retry all returned an empty Windows application list and `nodeRepl.fetch request failed`, so the following Stage 4 gates remain pending on an interactive desktop with working native control and a user-authorized Provider:
+
+- open the Panel from Quick Shell and the tray, verify destination-first handoff during generation, and prove the provider receives only one request;
+- create/rename/switch/delete conversations through the native UI, run two conversations concurrently, and prove an inactive answer updates only its original conversation;
+- close/reopen both surfaces during a stream, Stop and Regenerate, restart, and inspect restored completed/partial attempts and per-conversation model choice;
+- exercise a long conversation/sidebar, scroll upward during streaming to stop auto-follow, use jump-to-latest, select long Markdown, copy each fenced code block, and test Chinese IME candidate confirmation versus Enter/Shift+Enter;
+- repeat Windows 10, alternate DPI/multi-monitor layouts, clean-machine portability, long-run resource/GPU measurements, and a real compatible endpoint at their later/manual gates.

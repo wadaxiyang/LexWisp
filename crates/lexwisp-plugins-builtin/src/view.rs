@@ -160,7 +160,7 @@ impl QuickShellChat {
 
 impl Render for QuickShellChat {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let messages = Arc::new(self.snapshot.messages.clone());
+        let messages = self.snapshot.messages.clone();
         let scroller = self.scroller.clone();
         let settings_controller = self.controller.clone();
         let hide_controller = self.controller.clone();
@@ -246,7 +246,9 @@ impl Render for QuickShellChat {
                             MessageScroller::new(
                                 "chat-transcript",
                                 scroller,
-                                move |index, _, _| render_message(messages[index].clone()),
+                                move |index, _, _| {
+                                    render_message(messages[index].as_ref().clone())
+                                },
                             )
                             .w_full()
                             .h_full()
@@ -331,7 +333,7 @@ impl Render for QuickShellChat {
     }
 }
 
-fn render_message(message: ChatMessageSnapshot) -> impl IntoElement {
+pub(crate) fn render_message(message: ChatMessageSnapshot) -> gpui_kit::AnyElement {
     let id = message.id.as_str().to_owned();
     let content = if message.content.is_empty() {
         "Waiting for the provider…".to_owned()
@@ -358,14 +360,22 @@ fn render_message(message: ChatMessageSnapshot) -> impl IntoElement {
         BubbleVariant::Muted
     };
     let body = TextView::markdown(format!("message-body-{id}"), content.clone()).selectable(true);
+    let code_blocks = fenced_code_blocks(&message.content);
     let footer = if message.is_user {
         MessageFooter::new().child(status)
     } else {
-        MessageFooter::new().child(status).child(
-            Clipboard::new(format!("copy-message-{id}"))
-                .value(content)
-                .tooltip("Copy answer"),
-        )
+        MessageFooter::new()
+            .child(status)
+            .child(
+                Clipboard::new(format!("copy-message-{id}"))
+                    .value(content)
+                    .tooltip("Copy answer"),
+            )
+            .children(code_blocks.into_iter().enumerate().map(|(ix, code)| {
+                Clipboard::new(format!("copy-code-{id}-{ix}"))
+                    .value(code)
+                    .tooltip(format!("Copy code block {}", ix + 1))
+            }))
     };
     Message::new()
         .alignment(alignment)
@@ -379,6 +389,25 @@ fn render_message(message: ChatMessageSnapshot) -> impl IntoElement {
             ),
         )
         .footer(footer)
+        .into_any_element()
+}
+
+fn fenced_code_blocks(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current = None::<String>;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            if let Some(code) = current.take() {
+                blocks.push(code.trim_end_matches('\n').to_owned());
+            } else {
+                current = Some(String::new());
+            }
+        } else if let Some(code) = current.as_mut() {
+            code.push_str(line);
+            code.push('\n');
+        }
+    }
+    blocks
 }
 
 pub struct QuickShell {
@@ -399,6 +428,7 @@ pub struct QuickShell {
     parameter_inputs: HashMap<(QualifiedActionId, String), Entity<InputState>>,
     parameter_values: BTreeMap<(QualifiedActionId, String), String>,
     chat_snapshot: ChatSnapshot,
+    chat_scroller: Entity<MessageScrollerState>,
     text_snapshots: HashMap<QualifiedActionId, TextActionSnapshot>,
     result_tokens: HashMap<QualifiedActionId, lexwisp_core::ContextToken>,
     transient_status: Option<SharedString>,
@@ -473,12 +503,27 @@ impl QuickShell {
         }
 
         let chat_snapshot = chat.snapshot();
+        let chat_scroller =
+            cx.new(|cx| MessageScrollerState::new(chat_snapshot.messages.len(), cx));
         let chat_receiver = chat.subscribe(8);
         let mut listener_tasks = vec![cx.spawn(async move |view, cx| {
             while let Ok(snapshot) = chat_receiver.recv().await {
                 if view
                     .update(cx, |view, cx| {
+                        let changed_conversation =
+                            view.chat_snapshot.conversation_id != snapshot.conversation_id;
+                        let old_count = view.chat_snapshot.messages.len();
+                        let new_count = snapshot.messages.len();
                         view.chat_snapshot = snapshot;
+                        view.chat_scroller.update(cx, |scroller, cx| {
+                            if changed_conversation || new_count < old_count {
+                                scroller.reset(new_count, cx);
+                            } else if new_count > old_count {
+                                let _ = scroller.append(new_count - old_count, cx);
+                            } else if new_count > 0 {
+                                let _ = scroller.remeasure_items(new_count - 1..new_count, cx);
+                            }
+                        });
                         cx.notify();
                     })
                     .is_err()
@@ -536,6 +581,7 @@ impl QuickShell {
             parameter_inputs,
             parameter_values,
             chat_snapshot,
+            chat_scroller,
             text_snapshots,
             result_tokens: HashMap::new(),
             transient_status: None,
@@ -808,6 +854,7 @@ impl QuickShell {
 impl Render for QuickShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings_controller = self.controller.clone();
+        let panel_controller = self.controller.clone();
         let hide_controller = self.controller.clone();
         let selected = self.selected_action.clone();
         let action_choices = self.descriptors.iter().map(|descriptor| {
@@ -858,6 +905,8 @@ impl Render for QuickShell {
             .as_ref()
             .map(|snapshot| snapshot.output.clone())
             .unwrap_or_default();
+        let chat_messages = self.chat_snapshot.messages.clone();
+        let chat_scroller = self.chat_scroller.clone();
         let invocation = text_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.invocation_id.as_ref());
@@ -897,6 +946,15 @@ impl Render for QuickShell {
                         div()
                             .flex()
                             .gap_2()
+                            .child(
+                                Button::new("quick-open-chat-panel")
+                                    .label("Open chat…")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = panel_controller.update(cx, |controller, cx| {
+                                            let _ = controller.handoff_to_chat_panel(cx);
+                                        });
+                                    }),
+                            )
                             .child(
                                 Button::new("quick-settings")
                                     .ghost()
@@ -1058,17 +1116,18 @@ impl Render for QuickShell {
                     .border_color(cx.theme().border)
                     .when(selected_is_chat, |this| {
                         this.child(
-                            div()
-                                .size_full()
-                                .overflow_y_scrollbar()
-                                .p_3()
-                                .children(
-                                    self.chat_snapshot
-                                        .messages
-                                        .clone()
-                                        .into_iter()
-                                        .map(render_message),
-                                ),
+                            MessageScroller::new(
+                                "quick-chat-transcript",
+                                chat_scroller,
+                                move |index, _, _| {
+                                    chat_messages
+                                        .get(index)
+                                        .map(|message| render_message(message.as_ref().clone()))
+                                        .unwrap_or_else(|| div().into_any_element())
+                                },
+                            )
+                            .size_full()
+                            .with_jump_button_label("Jump to latest"),
                         )
                     })
                     .when(!selected_is_chat, |this| {
@@ -1209,5 +1268,19 @@ impl Render for QuickShell {
                             .child("Enter sends · Shift+Enter adds a line · candidate text is never sent without confirmation"),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fenced_code_blocks;
+
+    #[test]
+    fn fenced_code_blocks_are_independently_copyable() {
+        assert_eq!(
+            fenced_code_blocks("Before\n```rust\nlet answer = 42;\n```\nAfter"),
+            vec!["let answer = 42;"]
+        );
+        assert!(fenced_code_blocks("```unterminated").is_empty());
     }
 }

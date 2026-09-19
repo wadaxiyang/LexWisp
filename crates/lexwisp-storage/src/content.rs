@@ -10,7 +10,11 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender, TrySendError};
-use lexwisp_core::{ExecutionCheckpoint, ExecutionStatus};
+use lexwisp_core::{
+    AttemptId, ChatError, ChatHistoryPort, ChatMessageSnapshot, ChatMessageStatus,
+    ChatModelPreference, ConversationId, ExecutionCheckpoint, ExecutionStatus, MessageId,
+    PersistedChatConversation,
+};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use thiserror::Error;
 
@@ -40,6 +44,19 @@ enum StorageCommand {
     ContainsFavorite {
         invocation_id: String,
         reply: mpsc::Sender<Result<bool, StorageError>>,
+    },
+    RestoreConversations {
+        reply: mpsc::Sender<Result<Vec<PersistedChatConversation>, StorageError>>,
+    },
+    SaveConversation {
+        conversation_id: String,
+        title: String,
+        model_preference: String,
+        reply: Option<mpsc::Sender<Result<(), StorageError>>>,
+    },
+    DeleteConversation {
+        conversation_id: String,
+        reply: Option<mpsc::Sender<Result<(), StorageError>>>,
     },
     Shutdown,
 }
@@ -112,6 +129,70 @@ impl ContentStore {
             })
             .map_err(|_| StorageError::Closed)?;
         response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    fn restore_conversations(&self) -> Result<Vec<PersistedChatConversation>, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::RestoreConversations { reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    fn save_conversation_metadata(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+        model_preference: &ChatModelPreference,
+    ) -> Result<(), StorageError> {
+        self.sender
+            .try_send(StorageCommand::SaveConversation {
+                conversation_id: conversation_id.to_string(),
+                title: title.to_owned(),
+                model_preference: model_preference.persistence_name(),
+                reply: None,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => StorageError::QueueFull,
+                TrySendError::Closed(_) => StorageError::Closed,
+            })
+    }
+
+    fn delete_chat_conversation(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<(), StorageError> {
+        self.sender
+            .try_send(StorageCommand::DeleteConversation {
+                conversation_id: conversation_id.to_string(),
+                reply: None,
+            })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => StorageError::QueueFull,
+                TrySendError::Closed(_) => StorageError::Closed,
+            })
+    }
+}
+
+impl ChatHistoryPort for ContentStore {
+    fn restore(&self) -> Result<Vec<PersistedChatConversation>, ChatError> {
+        self.restore_conversations()
+            .map_err(|error| ChatError::Failed(error.to_string()))
+    }
+
+    fn save_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+        model_preference: &ChatModelPreference,
+    ) -> Result<(), ChatError> {
+        self.save_conversation_metadata(conversation_id, title, model_preference)
+            .map_err(|error| ChatError::Failed(error.to_string()))
+    }
+
+    fn delete_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError> {
+        self.delete_chat_conversation(conversation_id)
+            .map_err(|error| ChatError::Failed(error.to_string()))
     }
 }
 
@@ -190,6 +271,30 @@ fn worker_main(
             } => {
                 let _ = reply.send(contains_favorite(&connection, &invocation_id));
             }
+            StorageCommand::RestoreConversations { reply } => {
+                let _ = reply.send(load_conversations(&connection));
+            }
+            StorageCommand::SaveConversation {
+                conversation_id,
+                title,
+                model_preference,
+                reply,
+            } => {
+                let result =
+                    save_conversation(&connection, &conversation_id, &title, &model_preference);
+                if let Some(reply) = reply {
+                    let _ = reply.send(result);
+                }
+            }
+            StorageCommand::DeleteConversation {
+                conversation_id,
+                reply,
+            } => {
+                let result = delete_conversation(&mut connection, &conversation_id);
+                if let Some(reply) = reply {
+                    let _ = reply.send(result);
+                }
+            }
             StorageCommand::Shutdown => break,
         }
     }
@@ -210,7 +315,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
             |row| row.get(0),
         )
         .map_err(sql_error)?;
-    let existing_version = if has_schema {
+    let existing_version: Option<i64> = if has_schema {
         Some(
             connection
                 .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -224,6 +329,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
     if let Some(version) = existing_version
         && version != 1
         && version != 2
+        && version != 3
     {
         return Err(StorageError::Start(format!(
             "database schema version {version} is not supported"
@@ -239,6 +345,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
              CREATE TABLE IF NOT EXISTS conversations (
                  id TEXT PRIMARY KEY,
                  title TEXT NOT NULL,
+                 model_preference TEXT NOT NULL DEFAULT 'profile:fast',
                  created_at_ms INTEGER NOT NULL,
                  updated_at_ms INTEGER NOT NULL
              );
@@ -250,6 +357,8 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  content TEXT NOT NULL,
                  status TEXT NOT NULL,
                  invocation_id TEXT,
+                 attempt_id TEXT,
+                 reply_to_message_id TEXT,
                  sequence INTEGER NOT NULL,
                  retention_generation INTEGER NOT NULL,
                  updated_at_ms INTEGER NOT NULL,
@@ -275,6 +384,10 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  ON messages(conversation_id, ordinal);
              CREATE INDEX IF NOT EXISTS executions_conversation_updated
                  ON executions(conversation_id, updated_at_ms DESC);
+             CREATE TABLE IF NOT EXISTS conversation_deletions (
+                 conversation_id TEXT PRIMARY KEY,
+                 deleted_at_ms INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS action_executions (
                  id TEXT PRIMARY KEY,
                  plugin_id TEXT NOT NULL,
@@ -305,11 +418,18 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  WHERE status IN ('submitted', 'generating');",
         )
         .map_err(sql_error)?;
-    if existing_version.unwrap_or(1) == 1 {
+    if existing_version.is_some_and(|version| version < 3) {
         connection
-            .execute("UPDATE schema_version SET version = 2", [])
+            .execute_batch(
+                "ALTER TABLE conversations ADD COLUMN model_preference TEXT NOT NULL DEFAULT 'profile:fast';
+                 ALTER TABLE messages ADD COLUMN attempt_id TEXT;
+                 ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT;",
+            )
             .map_err(sql_error)?;
     }
+    connection
+        .execute("UPDATE schema_version SET version = 3", [])
+        .map_err(sql_error)?;
     Ok(connection)
 }
 
@@ -382,12 +502,32 @@ fn write_checkpoint(
         .ok_or_else(|| StorageError::Sql("chat checkpoint has no assistant message ID".into()))?;
     let user_ordinal = sqlite_u64(chat.user_ordinal, "user ordinal")?;
     let assistant_ordinal = sqlite_u64(chat.assistant_ordinal, "assistant ordinal")?;
+    let deleted: bool = transaction
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM conversation_deletions WHERE conversation_id = ?1
+             )",
+            [conversation_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if deleted {
+        return transaction.commit().map_err(sql_error);
+    }
     transaction
         .execute(
-            "INSERT INTO conversations(id, title, created_at_ms, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?3)
-             ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at_ms = excluded.updated_at_ms",
-            params![conversation_id.as_str(), chat.conversation_title, now],
+            "INSERT INTO conversations(id, title, model_preference, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                 title = excluded.title,
+                 model_preference = excluded.model_preference,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                conversation_id.as_str(),
+                chat.conversation_title,
+                chat.model_preference.persistence_name(),
+                now
+            ],
         )
         .map_err(sql_error)?;
     transaction
@@ -411,8 +551,8 @@ fn write_checkpoint(
         .execute(
             "INSERT INTO messages(
                  id, conversation_id, role, ordinal, content, status, invocation_id,
-                 sequence, retention_generation, updated_at_ms
-             ) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 attempt_id, reply_to_message_id, sequence, retention_generation, updated_at_ms
+             ) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                  content = excluded.content,
                  status = excluded.status,
@@ -427,6 +567,8 @@ fn write_checkpoint(
                 snapshot.output,
                 status_name(snapshot.status),
                 snapshot.invocation_id.as_str(),
+                chat.attempt_id.as_str(),
+                chat.reply_to_user_id.as_str(),
                 sequence,
                 retention_generation,
                 now,
@@ -531,6 +673,136 @@ fn contains_favorite(connection: &Connection, invocation_id: &str) -> Result<boo
         .map_err(sql_error)
 }
 
+fn save_conversation(
+    connection: &Connection,
+    conversation_id: &str,
+    title: &str,
+    model_preference: &str,
+) -> Result<(), StorageError> {
+    let now = now_ms();
+    connection
+        .execute(
+            "DELETE FROM conversation_deletions WHERE conversation_id = ?1",
+            [conversation_id],
+        )
+        .map_err(sql_error)?;
+    connection
+        .execute(
+            "INSERT INTO conversations(id, title, model_preference, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                 title = excluded.title,
+                 model_preference = excluded.model_preference,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![conversation_id, title, model_preference, now],
+        )
+        .map_err(sql_error)?;
+    Ok(())
+}
+
+fn delete_conversation(
+    connection: &mut Connection,
+    conversation_id: &str,
+) -> Result<(), StorageError> {
+    let transaction = connection.transaction().map_err(sql_error)?;
+    transaction
+        .execute(
+            "INSERT INTO conversation_deletions(conversation_id, deleted_at_ms)
+             VALUES (?1, ?2)
+             ON CONFLICT(conversation_id) DO UPDATE SET deleted_at_ms = excluded.deleted_at_ms",
+            params![conversation_id, now_ms()],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "DELETE FROM favorites WHERE invocation_id IN (
+                 SELECT id FROM executions WHERE conversation_id = ?1
+             )",
+            [conversation_id],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute("DELETE FROM conversations WHERE id = ?1", [conversation_id])
+        .map_err(sql_error)?;
+    transaction.commit().map_err(sql_error)
+}
+
+fn load_conversations(
+    connection: &Connection,
+) -> Result<Vec<PersistedChatConversation>, StorageError> {
+    let mut conversations = connection
+        .prepare(
+            "SELECT id, title, model_preference, updated_at_ms
+             FROM conversations ORDER BY updated_at_ms DESC, id ASC",
+        )
+        .map_err(sql_error)?;
+    let rows = conversations
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(sql_error)?;
+    let mut restored = Vec::new();
+    for row in rows {
+        let (id, title, model_preference, updated_at_ms) = row.map_err(sql_error)?;
+        let conversation_id = ConversationId::parse(id).map_err(StorageError::Sql)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, role, ordinal, content, status, attempt_id, reply_to_message_id
+                 FROM messages WHERE conversation_id = ?1 ORDER BY ordinal ASC, id ASC",
+            )
+            .map_err(sql_error)?;
+        let messages = statement
+            .query_map([conversation_id.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .map(|row| {
+                let (id, role, ordinal, content, status, attempt_id, reply_to_message_id) =
+                    row.map_err(sql_error)?;
+                Ok(ChatMessageSnapshot {
+                    id: MessageId::parse(id).map_err(StorageError::Sql)?,
+                    is_user: role == "user",
+                    content,
+                    status: ChatMessageStatus::from_persistence_name(&status)
+                        .unwrap_or(ChatMessageStatus::FailedPartial),
+                    ordinal: ordinal
+                        .try_into()
+                        .map_err(|_| StorageError::Sql("message ordinal is negative".into()))?,
+                    attempt_id: attempt_id
+                        .map(AttemptId::parse)
+                        .transpose()
+                        .map_err(StorageError::Sql)?,
+                    reply_to_user_id: reply_to_message_id
+                        .map(MessageId::parse)
+                        .transpose()
+                        .map_err(StorageError::Sql)?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        restored.push(PersistedChatConversation::new(
+            conversation_id,
+            title,
+            ChatModelPreference::from_persistence_name(&model_preference),
+            messages,
+            updated_at_ms.max(0) as u64,
+        ));
+    }
+    Ok(restored)
+}
+
 fn status_name(status: ExecutionStatus) -> &'static str {
     match status {
         ExecutionStatus::Queued => "queued",
@@ -567,8 +839,9 @@ mod tests {
     use std::{fs, sync::atomic::AtomicU64};
 
     use lexwisp_core::{
-        ActionId, ChatCheckpoint, ConversationId, ExecutionSnapshot, InvocationId, MessageId,
-        PluginId, ProviderId, QualifiedActionId, StorageState,
+        ActionId, AttemptId, ChatCheckpoint, ChatModelPreference, ConversationId,
+        ExecutionSnapshot, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId,
+        StorageState,
     };
 
     use super::*;
@@ -588,6 +861,9 @@ mod tests {
 
     fn checkpoint(sequence: u64, output: &str, status: ExecutionStatus) -> ExecutionCheckpoint {
         let plugin_id = PluginId::parse("org.lexwisp.chat").expect("valid plugin ID");
+        let conversation_id = ConversationId::new();
+        let user_message_id = MessageId::new();
+        let assistant_message_id = MessageId::new();
         ExecutionCheckpoint {
             snapshot: ExecutionSnapshot {
                 invocation_id: InvocationId::new(),
@@ -597,9 +873,9 @@ mod tests {
                     ActionId::parse("ask").expect("action ID"),
                 ),
                 plugin_generation: 1,
-                conversation_id: Some(ConversationId::new()),
-                user_message_id: Some(MessageId::new()),
-                assistant_message_id: Some(MessageId::new()),
+                conversation_id: Some(conversation_id),
+                user_message_id: Some(user_message_id.clone()),
+                assistant_message_id: Some(assistant_message_id),
                 provider_id: ProviderId::parse("default").expect("valid provider ID"),
                 model_id: "fixture".into(),
                 sequence,
@@ -613,8 +889,11 @@ mod tests {
             input: "hello".into(),
             chat: Some(ChatCheckpoint {
                 conversation_title: "hello".into(),
+                model_preference: ChatModelPreference::Fast,
                 user_ordinal: 0,
                 assistant_ordinal: 1,
+                attempt_id: AttemptId::new(),
+                reply_to_user_id: user_message_id,
             }),
         }
     }
@@ -701,6 +980,90 @@ mod tests {
         assert_eq!(input, "hello");
         assert_eq!(output, "translated");
         drop(connection);
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn conversations_restore_attempts_and_model_preference() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let mut terminal = checkpoint(2, "restored answer", ExecutionStatus::Completed);
+        terminal
+            .chat
+            .as_mut()
+            .expect("chat checkpoint")
+            .model_preference = ChatModelPreference::Smart;
+        let expected_conversation = terminal
+            .snapshot
+            .conversation_id
+            .as_ref()
+            .expect("conversation ID")
+            .clone();
+        let expected_attempt = terminal
+            .chat
+            .as_ref()
+            .expect("chat checkpoint")
+            .attempt_id
+            .clone();
+        store
+            .enqueue(terminal, true)
+            .expect("terminal enqueues")
+            .expect("terminal receipt")
+            .wait()
+            .expect("terminal persists");
+        owner.shutdown();
+
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store reopens");
+        let restored = ChatHistoryPort::restore(&store).expect("conversation restores");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id(), &expected_conversation);
+        assert_eq!(restored[0].model_preference(), &ChatModelPreference::Smart);
+        assert_eq!(restored[0].messages().len(), 2);
+        assert_eq!(
+            restored[0].messages()[1].attempt_id.as_ref(),
+            Some(&expected_attempt)
+        );
+        assert_eq!(restored[0].messages()[1].content, "restored answer");
+        owner.shutdown();
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn deletion_barrier_rejects_late_chat_checkpoints() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let terminal = checkpoint(2, "answer", ExecutionStatus::Completed);
+        let conversation_id = terminal
+            .snapshot
+            .conversation_id
+            .as_ref()
+            .expect("conversation ID")
+            .clone();
+        store
+            .enqueue(terminal.clone(), true)
+            .expect("terminal enqueues")
+            .expect("terminal receipt")
+            .wait()
+            .expect("terminal persists");
+        ChatHistoryPort::delete_conversation(&store, &conversation_id)
+            .expect("conversation deletes");
+        let mut late = terminal;
+        late.snapshot.sequence = 3;
+        late.snapshot.output = "late".into();
+        store
+            .enqueue(late, true)
+            .expect("late checkpoint enqueues")
+            .expect("late checkpoint receipt")
+            .wait()
+            .expect("late checkpoint is safely ignored");
+        assert!(
+            ChatHistoryPort::restore(&store)
+                .expect("restore succeeds")
+                .is_empty()
+        );
+        owner.shutdown();
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");
     }

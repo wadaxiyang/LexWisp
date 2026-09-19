@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SurfaceKind {
     QuickShell,
+    ChatPanel,
     ControlCenter,
 }
 
@@ -8,6 +9,7 @@ pub enum SurfaceKind {
 pub enum HostUiCommand {
     ToggleQuickShell(crate::ContextSnapshot),
     ShowQuickShell,
+    ShowChatPanel,
     ShowControlCenter,
     Quit,
 }

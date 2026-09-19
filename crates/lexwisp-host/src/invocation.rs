@@ -4,10 +4,10 @@ use std::{
 };
 
 use lexwisp_core::{
-    AiMessage, AiRole, Capability, ChatCheckpoint, ChatInvocationRequest, ChatRunError,
-    ChatRunFuture, ChatRunPort, CredentialStore, ExecutionObserver, ExecutionSnapshot,
-    ExecutionStatus, InvocationId, PluginId, ProviderError, QualifiedActionId, TaskOwner,
-    TextInvocationRequest, TextRunFuture, TextRunPort,
+    AiMessage, AiRole, Capability, ChatCheckpoint, ChatInvocationRequest, ChatModelPreference,
+    ChatRunError, ChatRunFuture, ChatRunPort, CredentialStore, ExecutionObserver,
+    ExecutionSnapshot, ExecutionStatus, InvocationId, PluginId, ProviderError, QualifiedActionId,
+    TaskOwner, TextInvocationRequest, TextRunFuture, TextRunPort,
 };
 use tokio::sync::{Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +30,7 @@ struct PreparedInvocation {
     user_message_id: Option<lexwisp_core::MessageId>,
     assistant_message_id: Option<lexwisp_core::MessageId>,
     chat: Option<ChatCheckpoint>,
+    model_preference: ChatModelPreference,
 }
 
 pub struct InvocationSupervisor {
@@ -129,7 +130,7 @@ impl InvocationSupervisor {
     ) -> Result<ExecutionSnapshot, ChatRunError> {
         let (provider, model_id) = self
             .providers
-            .resolve_default()
+            .resolve(&request.model_preference)
             .map_err(|error| ChatRunError::Failed(error.to_string()))?;
         let credential = if let Some(reference) = provider.credential_ref() {
             let credentials = self.credentials.clone();
@@ -320,19 +321,19 @@ impl ChatRunPort for ScopedChatRunPort {
         let prepared = PreparedInvocation {
             action: request.action,
             messages: request.messages.clone(),
-            input: request
-                .messages
-                .last()
-                .map(|message| message.content.clone())
-                .unwrap_or_default(),
+            input: request.input,
             conversation_id: Some(request.conversation_id),
             user_message_id: Some(request.user_message_id),
             assistant_message_id: Some(request.assistant_message_id),
             chat: Some(ChatCheckpoint {
                 conversation_title: request.conversation_title,
+                model_preference: request.model_preference.clone(),
                 user_ordinal: request.user_ordinal,
                 assistant_ordinal: request.assistant_ordinal,
+                attempt_id: request.attempt_id,
+                reply_to_user_id: request.reply_to_user_id,
             }),
+            model_preference: request.model_preference,
         };
         scope.spawn(async move {
             let result = supervisor
@@ -352,6 +353,14 @@ impl ChatRunPort for ScopedChatRunPort {
 
     fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError> {
         self.supervisor.cancel(invocation_id)
+    }
+
+    fn context_budget(&self, preference: &ChatModelPreference) -> usize {
+        self.supervisor
+            .providers
+            .resolve(preference)
+            .map(|(provider, _)| provider.context_budget())
+            .unwrap_or(8_192)
     }
 }
 
@@ -428,6 +437,7 @@ impl TextRunPort for ScopedTextRunPort {
             user_message_id: None,
             assistant_message_id: None,
             chat: None,
+            model_preference: ChatModelPreference::Fast,
         };
         let (sender, receiver) = oneshot::channel();
         scope.spawn(async move {

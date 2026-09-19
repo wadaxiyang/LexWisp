@@ -46,6 +46,7 @@ pub struct SurfaceController {
     launches: async_channel::Sender<ContextSnapshot>,
     action_descriptors: Vec<ActionDescriptor>,
     quick_shell_factory: QuickShellViewFactory,
+    chat_panel_factory: ChatPanelViewFactory,
     registry: WindowRegistry,
 }
 
@@ -77,6 +78,8 @@ impl SurfaceServices {
 
 pub type QuickShellViewFactory =
     Rc<dyn Fn(WeakEntity<SurfaceController>, &mut Window, &mut App) -> AnyView>;
+pub type ChatPanelViewFactory =
+    Rc<dyn Fn(WeakEntity<SurfaceController>, &mut Window, &mut App) -> AnyView>;
 pub type SurfaceFactory = SurfaceController;
 
 impl SurfaceController {
@@ -85,6 +88,7 @@ impl SurfaceController {
         services: SurfaceServices,
         launches: async_channel::Sender<ContextSnapshot>,
         quick_shell_factory: QuickShellViewFactory,
+        chat_panel_factory: ChatPanelViewFactory,
     ) -> Self {
         Self {
             platform,
@@ -95,6 +99,7 @@ impl SurfaceController {
             launches,
             action_descriptors: services.action_descriptors,
             quick_shell_factory,
+            chat_panel_factory,
             registry: WindowRegistry::default(),
         }
     }
@@ -139,8 +144,35 @@ impl SurfaceController {
         self.show(SurfaceKind::ControlCenter, cx)
     }
 
+    pub fn handoff_to_chat_panel(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        // Attach the destination observer before the popup is detached so an in-flight
+        // invocation always has a visible projection throughout the handoff.
+        self.show(SurfaceKind::ChatPanel, cx)?;
+        let handle = self
+            .registry
+            .entries
+            .get(&SurfaceKind::QuickShell)
+            .filter(|entry| entry.state == SurfaceState::Visible)
+            .map(|entry| entry.handle);
+        if let Some(handle) = handle {
+            let platform = self.platform.clone();
+            handle.update(cx, move |_, window, _| {
+                platform.hide(window).map_err(anyhow::Error::msg)
+            })??;
+            self.begin_warm_retention(cx);
+        }
+        Ok(())
+    }
+
+    pub fn close_chat_panel(&mut self, window: &mut Window, _: &mut Context<Self>) {
+        self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
+        window.remove_window();
+        self.registry.entries.remove(&SurfaceKind::ChatPanel);
+    }
+
     pub fn hide_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat.set_surface_visible(false);
+        self.chat
+            .set_surface_visible(SurfaceKind::QuickShell, false);
         for action in &self.text_actions {
             action.set_surface_visible(false);
         }
@@ -153,7 +185,8 @@ impl SurfaceController {
     }
 
     fn begin_warm_retention(&mut self, cx: &mut Context<Self>) {
-        self.chat.set_surface_visible(false);
+        self.chat
+            .set_surface_visible(SurfaceKind::QuickShell, false);
         for action in &self.text_actions {
             action.set_surface_visible(false);
         }
@@ -190,6 +223,14 @@ impl SurfaceController {
     }
 
     pub fn window_closed(&mut self, id: WindowId) {
+        if self
+            .registry
+            .entries
+            .get(&SurfaceKind::ChatPanel)
+            .is_some_and(|entry| entry.handle.window_id() == id)
+        {
+            self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
+        }
         self.registry
             .entries
             .retain(|_, entry| entry.handle.window_id() != id);
@@ -209,10 +250,12 @@ impl SurfaceController {
             });
             if matches!(shown, Ok(Ok(()))) {
                 if kind == SurfaceKind::QuickShell {
-                    self.chat.set_surface_visible(true);
+                    self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
                     for action in &self.text_actions {
                         action.set_surface_visible(true);
                     }
+                } else if kind == SurfaceKind::ChatPanel {
+                    self.chat.set_surface_visible(SurfaceKind::ChatPanel, true);
                 }
                 return Ok(());
             }
@@ -226,6 +269,7 @@ impl SurfaceController {
         let providers = self.providers.clone();
         let action_descriptors = self.action_descriptors.clone();
         let quick_shell_factory = self.quick_shell_factory.clone();
+        let chat_panel_factory = self.chat_panel_factory.clone();
         let preference = settings.snapshot().settings().theme();
         let options = build_window_options(kind, cx);
         let handle = cx.open_window(options, move |window, cx| {
@@ -238,9 +282,18 @@ impl SurfaceController {
                     });
                     false
                 });
+            } else if kind == SurfaceKind::ChatPanel {
+                let controller_for_close = controller.clone();
+                window.on_window_should_close(cx, move |window, cx| {
+                    let _ = controller_for_close.update(cx, |controller, cx| {
+                        controller.close_chat_panel(window, cx);
+                    });
+                    false
+                });
             }
             let content: AnyView = match kind {
                 SurfaceKind::QuickShell => quick_shell_factory(controller.clone(), window, cx),
+                SurfaceKind::ChatPanel => chat_panel_factory(controller.clone(), window, cx),
                 SurfaceKind::ControlCenter => cx
                     .new(|cx| {
                         ControlCenter::new(
@@ -267,10 +320,12 @@ impl SurfaceController {
             },
         );
         if kind == SurfaceKind::QuickShell {
-            self.chat.set_surface_visible(true);
+            self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
             for action in &self.text_actions {
                 action.set_surface_visible(true);
             }
+        } else if kind == SurfaceKind::ChatPanel {
+            self.chat.set_surface_visible(SurfaceKind::ChatPanel, true);
         }
         Ok(())
     }
@@ -306,6 +361,11 @@ fn build_window_options(kind: SurfaceKind, cx: &App) -> WindowOptions {
             "LexWisp · Quick Shell",
             size(px(720.), px(640.)),
             size(px(560.), px(480.)),
+        ),
+        SurfaceKind::ChatPanel => (
+            "LexWisp · Chat",
+            size(px(1120.), px(760.)),
+            size(px(760.), px(560.)),
         ),
         SurfaceKind::ControlCenter => (
             "LexWisp · Settings",

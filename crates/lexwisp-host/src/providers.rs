@@ -1,9 +1,9 @@
 use std::sync::{Arc, RwLock};
 
 use lexwisp_core::{
-    AiMessage, AiRole, AppSettings, CredentialStore, ModelProfile, ProviderConfig, ProviderDraft,
-    ProviderError, ProviderId, ProviderTestResult, ProviderUiFuture, ProviderUiPort,
-    ProviderUiSnapshot, SettingsUiPort,
+    AiMessage, AiRole, AppSettings, ChatModelPreference, CredentialStore, ModelProfile,
+    ProviderConfig, ProviderDraft, ProviderError, ProviderId, ProviderTestResult, ProviderUiFuture,
+    ProviderUiPort, ProviderUiSnapshot, SettingsUiPort,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -58,6 +58,27 @@ impl ProviderRegistry {
             .cloned()
             .ok_or(ProviderError::NotConfigured)?;
         Ok((provider, profile.model_id().to_owned()))
+    }
+
+    pub fn resolve(
+        &self,
+        preference: &ChatModelPreference,
+    ) -> Result<(ProviderConfig, String), ProviderError> {
+        let (provider, default_model) = self.resolve_default()?;
+        match preference {
+            ChatModelPreference::Fast | ChatModelPreference::Smart => Ok((provider, default_model)),
+            ChatModelPreference::Model(model)
+                if provider
+                    .model_ids()
+                    .iter()
+                    .any(|candidate| candidate == model) =>
+            {
+                Ok((provider, model.clone()))
+            }
+            ChatModelPreference::Model(model) => Err(ProviderError::InvalidConfiguration(format!(
+                "model '{model}' is not configured for the selected provider"
+            ))),
+        }
     }
 
     pub fn generation(&self) -> u64 {

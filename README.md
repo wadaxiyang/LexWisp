@@ -1,16 +1,19 @@
 # LexWisp
 
-LexWisp is a portable, native Windows text tool built with Rust, GPUI, and GPUI Kit. The current deliverable is **Stage 3: the first daily-use selection, translation, and polishing loop**.
+LexWisp is a portable, native Windows text tool built with Rust, GPUI, and GPUI Kit. The current deliverable is **Stage 4: multi-conversation Chat with an independent native panel**.
 
-Stage 3 adds verified Windows selection capture, three shortcut launch modes, manifest-driven Translate and Polish actions, result copy/favorite/manual replace, and per-action dismiss behavior while reusing Stage 2's provider, streaming, supervision, and persistence path.
+Stage 4 adds persistent conversation create/rename/switch/delete, per-conversation model preference, multi-turn context budgeting, retained regeneration attempts, and a large Chat Panel. Quick Shell and Chat Panel observe the same `ChatController`; moving to the panel attaches it before hiding the popup and never resends an active request. Stage 3's selection, Translate, Polish, copy/favorite, and safe replacement paths remain available.
 
 ## Run
 
-Extract `LexWisp-stage-03-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings and `lexwisp.db` under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
+Extract `LexWisp-stage-04-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings and `lexwisp.db` under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
 - First launch opens Control Center. Enter an OpenAI-compatible Base URL and model ID. If the endpoint uses Bearer authentication, enter an API key, choose **Test**, then **Save provider**. The key is stored only in Windows Credential Manager.
 - Configure the shortcut, launch mode, default action, dismiss overrides, theme, startup, and retention settings, then choose **Save**.
-- The default shortcut is `Ctrl + Alt + Space`. The notification-area icon opens Quick Shell on left click and provides Quick Shell, Settings, and Exit commands on right click.
+- The default shortcut is `Ctrl + Alt + Space`. The notification-area icon opens Quick Shell on left click and provides Quick Shell, Chat Panel, Settings, and Exit commands on right click.
+- In Quick Shell Chat, choose **Open chat…** to hand the current conversation—including an in-flight answer—to the independent panel. Closing either window does not cancel Chat; reopening it reads the current controller snapshot.
+- The Chat Panel provides virtualized conversation and message lists, New chat, rename/delete confirmation, per-conversation Fast/Smart/configured-model preference, Send/Stop/Regenerate, selectable Markdown, and copy controls for complete answers and individual fenced code blocks.
+- Context is assembled only from the current conversation and the latest completed assistant attempt for each retained round. It drops whole oldest rounds to fit the selected Provider/model's estimated client budget, reports that pruning, and rejects a current message that cannot fit rather than truncating it.
 - Select text in another application and press the shortcut. Verified UI Automation text can be routed through the action palette, directly to Translate, or to the configured default action. A copy-fallback result is shown as candidate text and is never sent until you explicitly confirm it.
 - Translate exposes its target-language parameter. Polish exposes Fluent, Concise, and Academic styles. Both stream into the shared result surface and support Stop, Copy, Favorite, and—only for a still-verifiable original selection—**Replace original**.
 - **Use clipboard text** is an explicit command available only to actions that declare clipboard input. LexWisp never silently uploads the previous clipboard after selection capture fails.
@@ -22,7 +25,7 @@ Extract `LexWisp-stage-03-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntim
 
 If a shortcut is already owned by another application, LexWisp keeps the previous working shortcut and reports the conflict. Settings are versioned TOML and are replaced atomically; content is checkpointed to SQLite. Corrupt or newer settings are preserved and reported rather than reset.
 
-Stage 3 still has one active Chat conversation and no multi-conversation history UI or independent Chat Panel; those belong to later stages. Selection and replacement support depends on the target application's UI Automation and input-injection behavior and deliberately degrades to manual input/copy when it cannot be proven safe.
+Stage 4 does not yet provide Stage 5's complete history/search/favorites management UI or privacy controls. Selection and replacement support depends on the target application's UI Automation and input-injection behavior and deliberately degrades to manual input/copy when it cannot be proven safe.
 
 ## Build
 
@@ -36,6 +39,6 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 ./scripts/package.ps1
 ```
 
-The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no VM or probe tool ships in Stage 3.
+The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no VM or probe tool ships in Stage 4.
 
 See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.

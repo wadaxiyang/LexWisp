@@ -16,7 +16,8 @@ pub use ai::{
     TextInvocationRequest, TextRunFuture, TextRunPort,
 };
 pub use chat::{
-    ChatError, ChatMessageSnapshot, ChatMessageStatus, ChatSnapshot, ChatUiPort, ChatUiResultFuture,
+    ChatConversationSummary, ChatError, ChatHistoryPort, ChatMessageSnapshot, ChatMessageStatus,
+    ChatModelPreference, ChatSnapshot, ChatUiPort, ChatUiResultFuture, PersistedChatConversation,
 };
 pub use command::{HostUiCommand, SurfaceKind};
 pub use context::{

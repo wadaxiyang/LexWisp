@@ -12,8 +12,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use async_channel::Sender;
 use lexwisp_core::{
-    ActionUiPort, AppSettings, ChatRunPort, ContextUiPort, FavoriteUiPort, HostUiCommand, PluginId,
-    ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
+    ActionUiPort, AppSettings, ChatHistoryPort, ChatRunPort, ContextUiPort, FavoriteUiPort,
+    HostUiCommand, PluginId, ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
 };
 use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
@@ -58,6 +58,7 @@ pub struct HostHandles {
     action_ui: Arc<dyn ActionUiPort>,
     context: Arc<dyn ContextUiPort>,
     favorites: Arc<dyn FavoriteUiPort>,
+    chat_history: Arc<dyn ChatHistoryPort>,
     executions: Arc<ExecutionStore>,
     supervisor: Arc<InvocationSupervisor>,
     ui_commands: HostUiCommandPort,
@@ -98,6 +99,10 @@ impl HostHandles {
 
     pub fn favorites(&self) -> Arc<dyn FavoriteUiPort> {
         self.favorites.clone()
+    }
+
+    pub fn chat_history(&self) -> Arc<dyn ChatHistoryPort> {
+        self.chat_history.clone()
     }
 
     pub fn executions(&self) -> Arc<ExecutionStore> {
@@ -171,6 +176,7 @@ impl Host {
         let credentials: Arc<dyn lexwisp_core::CredentialStore> = Arc::new(WindowsCredentialStore);
         let ai = Arc::new(AiService::new().map_err(|error| error.to_string())?);
         let favorites: Arc<dyn FavoriteUiPort> = Arc::new(FavoriteService::new(content.clone()));
+        let chat_history: Arc<dyn ChatHistoryPort> = Arc::new(content.clone());
         let executions = Arc::new(ExecutionStore::new(content));
         let supervisor = Arc::new(InvocationSupervisor::new(
             ai.clone(),
@@ -196,6 +202,7 @@ impl Host {
             action_ui,
             context: Arc::new(context),
             favorites,
+            chat_history,
             executions,
             supervisor: supervisor.clone(),
             ui_commands: HostUiCommandPort {

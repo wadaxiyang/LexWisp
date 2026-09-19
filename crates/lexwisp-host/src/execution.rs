@@ -313,8 +313,11 @@ mod tests {
             input: "hello".into(),
             chat: Some(ChatCheckpoint {
                 conversation_title: "hello".into(),
+                model_preference: lexwisp_core::ChatModelPreference::Fast,
                 user_ordinal: 0,
                 assistant_ordinal: 1,
+                attempt_id: lexwisp_core::AttemptId::new(),
+                reply_to_user_id: MessageId::new(),
             }),
             observer: Arc::new(Sink),
         });

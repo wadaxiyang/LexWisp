@@ -168,6 +168,15 @@ impl AppSettings {
                 .parse::<crate::QualifiedActionId>()
                 .map_err(SettingsError::Invalid)?;
         }
+        if self
+            .providers
+            .iter()
+            .any(|provider| provider.context_budget() == 0)
+        {
+            return Err(SettingsError::Invalid(
+                "provider context budget must be greater than zero".into(),
+            ));
+        }
         if let Some(profile) = &self.default_profile {
             let provider = self
                 .providers

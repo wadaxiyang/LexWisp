@@ -9,10 +9,11 @@ use lexwisp_platform_windows::{
     SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsContextService,
     WindowsShell, hide_native_window, show_native_window, show_startup_error,
 };
-use lexwisp_plugins_builtin::{ChatController, QuickShell, chat_action, chat_plugin};
+use lexwisp_plugins_builtin::{ChatController, ChatPanel, QuickShell, chat_action, chat_plugin};
 use lexwisp_storage::ConfigStore;
 use lexwisp_ui::{
-    QuickShellViewFactory, SurfaceController, SurfaceServices, SurfaceWindowPlatform,
+    ChatPanelViewFactory, QuickShellViewFactory, SurfaceController, SurfaceServices,
+    SurfaceWindowPlatform,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -120,7 +121,11 @@ fn run() -> Result<(), String> {
     let favorites = handles.favorites();
     let plugin = chat_plugin();
     let action = chat_action();
-    let chat_controller = ChatController::new(handles.chat_run_port(plugin.id().clone()));
+    let chat_controller = ChatController::new(
+        handles.chat_run_port(plugin.id().clone()),
+        handles.chat_history(),
+    )
+    .map_err(|error| error.to_string())?;
     let handler: Arc<dyn ActionHandler> = chat_controller.clone();
     handles
         .plugins()
@@ -199,6 +204,14 @@ fn run() -> Result<(), String> {
             .into()
         })
     };
+    let chat_panel_factory: ChatPanelViewFactory = {
+        let chat = chat.clone();
+        let providers = providers.clone();
+        Rc::new(move |controller, window, cx| {
+            cx.new(|cx| ChatPanel::new(controller, chat.clone(), providers.clone(), window, cx))
+                .into()
+        })
+    };
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -217,6 +230,7 @@ fn run() -> Result<(), String> {
                     ),
                     launch_sender.clone(),
                     quick_shell_factory.clone(),
+                    chat_panel_factory.clone(),
                 )
             });
             let surface_for_commands = surfaces.downgrade();
@@ -242,6 +256,18 @@ fn run() -> Result<(), String> {
                             if let Err(error) = result {
                                 show_startup_error(&format!(
                                     "Could not open Quick Shell.\n\n{error:#}"
+                                ));
+                            }
+                        }
+                        HostUiCommand::ShowChatPanel => {
+                            let result = surface_for_commands
+                                .update(cx, |surfaces, cx| {
+                                    surfaces.handoff_to_chat_panel(cx)
+                                })
+                                .and_then(|result| result);
+                            if let Err(error) = result {
+                                show_startup_error(&format!(
+                                    "Could not open Chat.\n\n{error:#}"
                                 ));
                             }
                         }
