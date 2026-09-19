@@ -133,6 +133,13 @@ impl ProviderService {
                 use_authentication: provider.credential_ref().is_some(),
                 has_saved_credential: provider.credential_ref().is_some(),
                 generation: snapshot.generation(),
+                context_budget: provider.context_budget(),
+                proxy_url: provider.proxy_url().unwrap_or_default().to_owned(),
+                connect_timeout_seconds: provider.connect_timeout_seconds(),
+                total_timeout_seconds: provider.total_timeout_seconds(),
+                event_timeout_seconds: provider.event_timeout_seconds(),
+                temperature_milli: provider.temperature_milli(),
+                max_output_tokens: provider.max_output_tokens(),
             }
         } else {
             ProviderUiSnapshot {
@@ -145,6 +152,13 @@ impl ProviderService {
                 use_authentication: true,
                 has_saved_credential: false,
                 generation: snapshot.generation(),
+                context_budget: 8_192,
+                proxy_url: String::new(),
+                connect_timeout_seconds: 10,
+                total_timeout_seconds: 180,
+                event_timeout_seconds: 60,
+                temperature_milli: None,
+                max_output_tokens: None,
             }
         }
     }
@@ -305,6 +319,32 @@ fn build_config(
         ));
     }
     crate::ai::completion_endpoint(base_url)?;
+    let context_budget = parse_required::<usize>(&draft.context_budget, "context budget")?;
+    let connect_timeout = parse_required::<u64>(&draft.connect_timeout_seconds, "connect timeout")?;
+    let total_timeout = parse_required::<u64>(&draft.total_timeout_seconds, "total timeout")?;
+    let event_timeout = parse_required::<u64>(&draft.event_timeout_seconds, "event timeout")?;
+    let temperature_milli = parse_optional::<f64>(&draft.temperature, "temperature")?
+        .map(|temperature| {
+            if !(0.0..=2.0).contains(&temperature) {
+                return Err(ProviderError::InvalidConfiguration(
+                    "temperature must be between 0 and 2".into(),
+                ));
+            }
+            Ok((temperature * 1_000.0).round() as u16)
+        })
+        .transpose()?;
+    let max_output_tokens = parse_optional::<u32>(&draft.max_output_tokens, "max output tokens")?;
+    if context_budget == 0
+        || !(1..=120).contains(&connect_timeout)
+        || !(1..=600).contains(&total_timeout)
+        || !(1..=300).contains(&event_timeout)
+        || max_output_tokens == Some(0)
+    {
+        return Err(ProviderError::InvalidConfiguration(
+            "context budget, timeouts, or output limit is outside the supported range".into(),
+        ));
+    }
+    let proxy_url = (!draft.proxy_url.trim().is_empty()).then(|| draft.proxy_url.trim().to_owned());
     Ok((
         ProviderConfig::new(
             id,
@@ -313,7 +353,35 @@ fn build_config(
             credential_ref,
             vec![model.to_owned()],
             draft.stream,
+        )
+        .with_advanced_options(
+            context_budget,
+            proxy_url,
+            connect_timeout,
+            total_timeout,
+            event_timeout,
+            temperature_milli,
+            max_output_tokens,
         ),
         model.to_owned(),
     ))
+}
+
+fn parse_required<T: std::str::FromStr>(value: &str, label: &str) -> Result<T, ProviderError> {
+    value
+        .trim()
+        .parse()
+        .map_err(|_| ProviderError::InvalidConfiguration(format!("{label} must be a valid number")))
+}
+
+fn parse_optional<T: std::str::FromStr>(
+    value: &str,
+    label: &str,
+) -> Result<Option<T>, ProviderError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        parse_required(value, label).map(Some)
+    }
 }

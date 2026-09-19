@@ -119,6 +119,7 @@ fn run() -> Result<(), String> {
     let actions = handles.action_ui();
     let context_ui = handles.context();
     let favorites = handles.favorites();
+    let history = handles.history();
     let plugin = chat_plugin();
     let action = chat_action();
     let chat_controller = ChatController::new(
@@ -225,6 +226,7 @@ fn run() -> Result<(), String> {
                         settings.clone(),
                         providers.clone(),
                         chat.clone(),
+                        history.clone(),
                         text_actions.clone(),
                         descriptors.clone(),
                     ),

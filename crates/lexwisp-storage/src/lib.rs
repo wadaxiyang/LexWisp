@@ -92,6 +92,18 @@ impl ConfigStore {
         settings.validate()?;
         let source = toml::to_string_pretty(settings)
             .map_err(|error| SettingsError::Save(error.to_string()))?;
+        if let Ok(previous) = fs::read_to_string(&self.path)
+            && toml::from_str::<AppSettings>(&previous)
+                .is_ok_and(|settings| settings.validate().is_ok())
+        {
+            let backup = self
+                .data_directory()
+                .join("backups")
+                .join("settings.previous.toml");
+            self.writer
+                .write_atomic(&backup, previous.as_bytes())
+                .map_err(|error| SettingsError::Save(error.to_string()))?;
+        }
         self.writer
             .write_atomic(&self.path, source.as_bytes())
             .map_err(|error| SettingsError::Save(error.to_string()))
@@ -191,5 +203,27 @@ mod tests {
         let loaded = store.load().expect("missing settings should use defaults");
         assert!(loaded.first_run());
         assert_eq!(loaded.settings(), &AppSettings::default());
+    }
+
+    #[test]
+    fn saving_keeps_one_previous_valid_configuration() {
+        let path = isolated_path();
+        let store = ConfigStore::at(path.clone(), Arc::new(TestWriter));
+        let first = AppSettings::default().with_popup_retention_seconds(30);
+        let second = AppSettings::default().with_popup_retention_seconds(60);
+        store.save(&first).expect("first settings save");
+        store.save(&second).expect("second settings save");
+        let backup = path
+            .parent()
+            .expect("settings parent")
+            .join("backups")
+            .join("settings.previous.toml");
+        let restored: AppSettings = toml::from_str(
+            &fs::read_to_string(backup).expect("previous valid settings are retained"),
+        )
+        .expect("backup parses");
+        assert_eq!(restored, first);
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
     }
 }

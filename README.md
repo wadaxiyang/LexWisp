@@ -1,12 +1,12 @@
 # LexWisp
 
-LexWisp is a portable, native Windows text tool built with Rust, GPUI, and GPUI Kit. The current deliverable is **Stage 4: multi-conversation Chat with an independent native panel**.
+LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 5: complete daily settings, history, favorites, privacy, and diagnostics**.
 
-Stage 4 adds persistent conversation create/rename/switch/delete, per-conversation model preference, multi-turn context budgeting, retained regeneration attempts, and a large Chat Panel. Quick Shell and Chat Panel observe the same `ChatController`; moving to the panel attaches it before hiding the popup and never resends an active request. Stage 3's selection, Translate, Polish, copy/favorite, and safe replacement paths remain available.
+Stage 5 adds cursor-paged searchable history, plugin/status filters, authoritative detail/copy/retry/delete operations, annotated favorites, recording and retention barriers, consistent SQLite backup, active config reload, redacted diagnostics, and complete daily Provider/action settings. Stage 4's shared multi-conversation Chat Panel and Quick Shell remain available.
 
 ## Run
 
-Extract `LexWisp-stage-04-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings and `lexwisp.db` under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
+Extract `LexWisp-stage-05-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings and `lexwisp.db` under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
 - First launch opens Control Center. Enter an OpenAI-compatible Base URL and model ID. If the endpoint uses Bearer authentication, enter an API key, choose **Test**, then **Save provider**. The key is stored only in Windows Credential Manager.
 - Configure the shortcut, launch mode, default action, dismiss overrides, theme, startup, and retention settings, then choose **Save**.
@@ -25,7 +25,7 @@ Extract `LexWisp-stage-04-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntim
 
 If a shortcut is already owned by another application, LexWisp keeps the previous working shortcut and reports the conflict. Settings are versioned TOML and are replaced atomically; content is checkpointed to SQLite. Corrupt or newer settings are preserved and reported rather than reset.
 
-Stage 4 does not yet provide Stage 5's complete history/search/favorites management UI or privacy controls. Selection and replacement support depends on the target application's UI Automation and input-injection behavior and deliberately degrades to manual input/copy when it cannot be proven safe.
+The Control Center's History & favorites page supports text search, plugin/status/favorite filters, stable cursor paging, selectable authoritative bodies, copy, retry, annotation, explicit two-step delete, and clear-with-or-without-favorites. Privacy & diagnostics controls automatic recording, active config reload, consistent backup, and redacted diagnostics. Selection and replacement support still depends on the target application's UI Automation and input-injection behavior and deliberately degrades to manual input/copy when it cannot be proven safe.
 
 ## Build
 
@@ -39,6 +39,6 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 ./scripts/package.ps1
 ```
 
-The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no VM or probe tool ships in Stage 4.
+The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no VM or probe tool ships in Stage 5.
 
 See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.

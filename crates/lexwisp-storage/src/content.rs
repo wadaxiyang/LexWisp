@@ -12,10 +12,11 @@ use std::{
 use async_channel::{Receiver, Sender, TrySendError};
 use lexwisp_core::{
     AttemptId, ChatError, ChatHistoryPort, ChatMessageSnapshot, ChatMessageStatus,
-    ChatModelPreference, ConversationId, ExecutionCheckpoint, ExecutionStatus, MessageId,
-    PersistedChatConversation,
+    ChatModelPreference, ClearHistoryMode, ConversationId, ExecutionCheckpoint, ExecutionStatus,
+    HistoryCursor, HistoryDetail, HistoryItem, HistoryPage, HistoryQuery, InvocationId, MessageId,
+    PersistedChatConversation, QualifiedActionId,
 };
-use rusqlite::{Connection, OptionalExtension as _, params};
+use rusqlite::{Connection, MAIN_DB, OptionalExtension as _, params};
 use thiserror::Error;
 
 const STORAGE_QUEUE_CAPACITY: usize = 64;
@@ -44,6 +45,43 @@ enum StorageCommand {
     ContainsFavorite {
         invocation_id: String,
         reply: mpsc::Sender<Result<bool, StorageError>>,
+    },
+    FavoriteIds {
+        reply: mpsc::Sender<Result<Vec<String>, StorageError>>,
+    },
+    SetFavorite {
+        invocation_id: String,
+        favorite: bool,
+        note: String,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    QueryHistory {
+        query: HistoryQuery,
+        reply: mpsc::Sender<Result<HistoryPage, StorageError>>,
+    },
+    HistoryDetail {
+        invocation_id: String,
+        reply: mpsc::Sender<Result<Option<HistoryDetail>, StorageError>>,
+    },
+    DeleteHistory {
+        invocation_id: String,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    ClearHistory {
+        mode: ClearHistoryMode,
+        generation: u64,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    Backup {
+        path: PathBuf,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    RetentionGeneration {
+        reply: mpsc::Sender<Result<u64, StorageError>>,
+    },
+    SetRetentionGeneration {
+        generation: u64,
+        reply: mpsc::Sender<Result<(), StorageError>>,
     },
     RestoreConversations {
         reply: mpsc::Sender<Result<Vec<PersistedChatConversation>, StorageError>>,
@@ -127,6 +165,105 @@ impl ContentStore {
                 invocation_id: invocation_id.to_owned(),
                 reply,
             })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn favorite_ids(&self) -> Result<Vec<String>, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::FavoriteIds { reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn set_favorite(
+        &self,
+        invocation_id: &str,
+        favorite: bool,
+        note: &str,
+    ) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::SetFavorite {
+                invocation_id: invocation_id.to_owned(),
+                favorite,
+                note: note.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn query_history(&self, query: HistoryQuery) -> Result<HistoryPage, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::QueryHistory { query, reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn history_detail(
+        &self,
+        invocation_id: &str,
+    ) -> Result<Option<HistoryDetail>, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::HistoryDetail {
+                invocation_id: invocation_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn delete_history(&self, invocation_id: &str) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::DeleteHistory {
+                invocation_id: invocation_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn clear_history(
+        &self,
+        mode: ClearHistoryMode,
+        generation: u64,
+    ) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::ClearHistory {
+                mode,
+                generation,
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn backup(&self, path: PathBuf) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::Backup { path, reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn retention_generation(&self) -> Result<u64, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::RetentionGeneration { reply })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn set_retention_generation(&self, generation: u64) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::SetRetentionGeneration { generation, reply })
             .map_err(|_| StorageError::Closed)?;
         response.recv().unwrap_or(Err(StorageError::Closed))
     }
@@ -271,6 +408,90 @@ fn worker_main(
             } => {
                 let _ = reply.send(contains_favorite(&connection, &invocation_id));
             }
+            StorageCommand::FavoriteIds { reply } => {
+                let result = (|| {
+                    let mut statement = connection
+                        .prepare("SELECT invocation_id FROM favorites ORDER BY invocation_id")
+                        .map_err(sql_error)?;
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .map_err(sql_error)?
+                        .map(|row| row.map_err(sql_error))
+                        .collect()
+                })();
+                let _ = reply.send(result);
+            }
+            StorageCommand::SetFavorite {
+                invocation_id,
+                favorite,
+                note,
+                reply,
+            } => {
+                let _ = reply.send(set_favorite(
+                    &mut connection,
+                    &invocation_id,
+                    favorite,
+                    &note,
+                ));
+            }
+            StorageCommand::QueryHistory { query, reply } => {
+                let _ = reply.send(query_history(&connection, &query));
+            }
+            StorageCommand::HistoryDetail {
+                invocation_id,
+                reply,
+            } => {
+                let _ = reply.send(history_detail(&connection, &invocation_id));
+            }
+            StorageCommand::DeleteHistory {
+                invocation_id,
+                reply,
+            } => {
+                let _ = reply.send(delete_history(&mut connection, &invocation_id));
+            }
+            StorageCommand::ClearHistory {
+                mode,
+                generation,
+                reply,
+            } => {
+                let _ = reply.send(clear_history(&mut connection, mode, generation));
+            }
+            StorageCommand::Backup { path, reply } => {
+                let result = path
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .transpose()
+                    .map_err(|error| StorageError::Sql(error.to_string()))
+                    .and_then(|_| connection.backup(MAIN_DB, path, None).map_err(sql_error));
+                let _ = reply.send(result);
+            }
+            StorageCommand::RetentionGeneration { reply } => {
+                let result = connection
+                    .query_row(
+                        "SELECT generation FROM retention_state WHERE singleton = 1",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(sql_error)
+                    .and_then(|value| {
+                        value.try_into().map_err(|_| {
+                            StorageError::Sql("retention generation is negative".into())
+                        })
+                    });
+                let _ = reply.send(result);
+            }
+            StorageCommand::SetRetentionGeneration { generation, reply } => {
+                let result = sqlite_u64(generation, "retention generation").and_then(|value| {
+                    connection
+                        .execute(
+                            "UPDATE retention_state SET generation = ?1 WHERE singleton = 1",
+                            [value],
+                        )
+                        .map(|_| ())
+                        .map_err(sql_error)
+                });
+                let _ = reply.send(result);
+            }
             StorageCommand::RestoreConversations { reply } => {
                 let _ = reply.send(load_conversations(&connection));
             }
@@ -330,6 +551,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
         && version != 1
         && version != 2
         && version != 3
+        && version != 4
     {
         return Err(StorageError::Start(format!(
             "database schema version {version} is not supported"
@@ -367,6 +589,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
              CREATE TABLE IF NOT EXISTS executions (
                  id TEXT PRIMARY KEY,
                  plugin_id TEXT NOT NULL,
+                 action_id TEXT NOT NULL DEFAULT 'org.lexwisp.chat/ask',
                  plugin_generation INTEGER NOT NULL,
                  provider_id TEXT NOT NULL,
                  model_id TEXT NOT NULL,
@@ -408,8 +631,18 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  ON action_executions(updated_at_ms DESC);
              CREATE TABLE IF NOT EXISTS favorites (
                  invocation_id TEXT PRIMARY KEY,
-                 created_at_ms INTEGER NOT NULL
+                 created_at_ms INTEGER NOT NULL,
+                 note TEXT NOT NULL DEFAULT ''
              );
+             CREATE TABLE IF NOT EXISTS execution_deletions (
+                 invocation_id TEXT PRIMARY KEY,
+                 deleted_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS retention_state (
+                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 generation INTEGER NOT NULL
+             );
+             INSERT OR IGNORE INTO retention_state(singleton, generation) VALUES (1, 0);
              UPDATE executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
                  WHERE status IN ('queued', 'running', 'cancelling');
              UPDATE action_executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
@@ -427,8 +660,16 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
             )
             .map_err(sql_error)?;
     }
+    if existing_version.is_some_and(|version| version < 4) {
+        connection
+            .execute_batch(
+                "ALTER TABLE favorites ADD COLUMN note TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE executions ADD COLUMN action_id TEXT NOT NULL DEFAULT 'org.lexwisp.chat/ask';",
+            )
+            .map_err(sql_error)?;
+    }
     connection
-        .execute("UPDATE schema_version SET version = 3", [])
+        .execute("UPDATE schema_version SET version = 4", [])
         .map_err(sql_error)?;
     Ok(connection)
 }
@@ -443,6 +684,23 @@ fn write_checkpoint(
     let retention_generation = sqlite_u64(snapshot.retention_generation, "retention generation")?;
     let now = now_ms();
     let transaction = connection.transaction().map_err(sql_error)?;
+    let current_generation: i64 = transaction
+        .query_row(
+            "SELECT generation FROM retention_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    let deleted: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM execution_deletions WHERE invocation_id = ?1)",
+            [snapshot.invocation_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if current_generation != retention_generation || deleted {
+        return transaction.commit().map_err(sql_error);
+    }
     let Some(chat) = &checkpoint.chat else {
         let started_at = transaction
             .query_row(
@@ -464,10 +722,11 @@ fn write_checkpoint(
                      output = excluded.output,
                      status = excluded.status,
                      sequence = excluded.sequence,
+                     retention_generation = excluded.retention_generation,
                      error = excluded.error,
                      updated_at_ms = excluded.updated_at_ms
                  WHERE excluded.sequence > action_executions.sequence
-                   AND excluded.retention_generation = action_executions.retention_generation",
+                   AND excluded.retention_generation >= action_executions.retention_generation",
                 params![
                     snapshot.invocation_id.as_str(),
                     snapshot.plugin_id.as_str(),
@@ -557,9 +816,10 @@ fn write_checkpoint(
                  content = excluded.content,
                  status = excluded.status,
                  sequence = excluded.sequence,
+                 retention_generation = excluded.retention_generation,
                  updated_at_ms = excluded.updated_at_ms
              WHERE excluded.sequence > messages.sequence
-               AND excluded.retention_generation = messages.retention_generation",
+               AND excluded.retention_generation >= messages.retention_generation",
             params![
                 assistant_message_id.as_str(),
                 conversation_id.as_str(),
@@ -587,20 +847,22 @@ fn write_checkpoint(
     transaction
         .execute(
             "INSERT INTO executions(
-                 id, plugin_id, plugin_generation, provider_id, model_id, conversation_id,
+                 id, plugin_id, action_id, plugin_generation, provider_id, model_id, conversation_id,
                  user_message_id, assistant_message_id, status, sequence, retention_generation,
                  error, started_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                  status = excluded.status,
                  sequence = excluded.sequence,
+                 retention_generation = excluded.retention_generation,
                  error = excluded.error,
                  updated_at_ms = excluded.updated_at_ms
              WHERE excluded.sequence > executions.sequence
-               AND excluded.retention_generation = executions.retention_generation",
+               AND excluded.retention_generation >= executions.retention_generation",
             params![
                 snapshot.invocation_id.as_str(),
                 snapshot.plugin_id.as_str(),
+                snapshot.action.to_string(),
                 plugin_generation,
                 snapshot.provider_id.as_str(),
                 snapshot.model_id,
@@ -654,13 +916,354 @@ fn toggle_favorite(connection: &mut Connection, invocation_id: &str) -> Result<b
         }
         transaction
             .execute(
-                "INSERT INTO favorites(invocation_id, created_at_ms) VALUES (?1, ?2)",
+                "INSERT INTO favorites(invocation_id, created_at_ms, note) VALUES (?1, ?2, '')",
                 params![invocation_id, now_ms()],
             )
             .map_err(sql_error)?;
     }
     transaction.commit().map_err(sql_error)?;
     Ok(!exists)
+}
+
+fn set_favorite(
+    connection: &mut Connection,
+    invocation_id: &str,
+    favorite: bool,
+    note: &str,
+) -> Result<(), StorageError> {
+    if note.chars().count() > 1_000 {
+        return Err(StorageError::Sql(
+            "favorite annotation must not exceed 1000 characters".into(),
+        ));
+    }
+    let transaction = connection.transaction().map_err(sql_error)?;
+    if favorite {
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM executions WHERE id = ?1
+                    UNION ALL SELECT 1 FROM action_executions WHERE id = ?1
+                 )",
+                [invocation_id],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if !exists {
+            return Err(StorageError::Sql(
+                "cannot favorite an execution that has not been saved".into(),
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO favorites(invocation_id, created_at_ms, note)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(invocation_id) DO UPDATE SET note = excluded.note",
+                params![invocation_id, now_ms(), note],
+            )
+            .map_err(sql_error)?;
+    } else {
+        transaction
+            .execute(
+                "DELETE FROM favorites WHERE invocation_id = ?1",
+                [invocation_id],
+            )
+            .map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)
+}
+
+fn query_history(
+    connection: &Connection,
+    query: &HistoryQuery,
+) -> Result<HistoryPage, StorageError> {
+    let limit = query.limit.clamp(1, 100);
+    let search = format!("%{}%", query.search.trim());
+    let plugin = query.plugin_id.as_deref();
+    let status = query.status.map(status_name);
+    let cursor_time = query.cursor.as_ref().map(|cursor| cursor.updated_at_ms);
+    let cursor_id = query
+        .cursor
+        .as_ref()
+        .map(|cursor| cursor.invocation_id.as_str());
+    let mut statement = connection
+        .prepare(
+            "WITH history AS (
+                SELECT e.id, e.action_id, c.title, substr(am.content, 1, 240) AS preview,
+                       e.status, e.provider_id, e.model_id, e.updated_at_ms,
+                       CASE WHEN f.invocation_id IS NULL THEN 0 ELSE 1 END AS favorite,
+                       coalesce(f.note, '') AS favorite_note, um.content AS input, am.content AS output,
+                       e.plugin_id
+                FROM executions e
+                JOIN conversations c ON c.id = e.conversation_id
+                JOIN messages um ON um.id = e.user_message_id
+                JOIN messages am ON am.id = e.assistant_message_id
+                LEFT JOIN favorites f ON f.invocation_id = e.id
+                UNION ALL
+                SELECT a.id, a.action_id, a.action_id, substr(a.output, 1, 240),
+                       a.status, a.provider_id, a.model_id, a.updated_at_ms,
+                       CASE WHEN f.invocation_id IS NULL THEN 0 ELSE 1 END,
+                       coalesce(f.note, ''), a.input, a.output, a.plugin_id
+                FROM action_executions a
+                LEFT JOIN favorites f ON f.invocation_id = a.id
+            )
+            SELECT id, action_id, title, preview, status, provider_id, model_id,
+                   updated_at_ms, favorite, favorite_note
+            FROM history
+            WHERE (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR input LIKE ?1 ESCAPE '\\' OR output LIKE ?1 ESCAPE '\\')
+              AND (?2 IS NULL OR plugin_id = ?2)
+              AND (?3 IS NULL OR status = ?3)
+              AND (?4 = 0 OR favorite = 1)
+              AND (?5 IS NULL OR updated_at_ms < ?5 OR (updated_at_ms = ?5 AND id > ?6))
+            ORDER BY updated_at_ms DESC, id ASC
+            LIMIT ?7",
+        )
+        .map_err(sql_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                search,
+                plugin,
+                status,
+                query.favorites_only,
+                cursor_time,
+                cursor_id,
+                (limit + 1) as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, bool>(8)?,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .map_err(sql_error)?;
+    let mut items = rows
+        .map(|row| history_item(row.map_err(sql_error)?))
+        .collect::<Result<Vec<_>, _>>()?;
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next_cursor = has_more
+        .then(|| {
+            items.last().map(|item| HistoryCursor {
+                updated_at_ms: item.updated_at_ms,
+                invocation_id: item.invocation_id.to_string(),
+            })
+        })
+        .flatten();
+    Ok(HistoryPage { items, next_cursor })
+}
+
+fn history_detail(
+    connection: &Connection,
+    invocation_id: &str,
+) -> Result<Option<HistoryDetail>, StorageError> {
+    let row = connection
+        .query_row(
+            "WITH history AS (
+                SELECT e.id, e.action_id, c.title, substr(am.content, 1, 240), e.status,
+                       e.provider_id, e.model_id, e.updated_at_ms,
+                       CASE WHEN f.invocation_id IS NULL THEN 0 ELSE 1 END,
+                       coalesce(f.note, ''), um.content, am.content
+                FROM executions e JOIN conversations c ON c.id = e.conversation_id
+                JOIN messages um ON um.id = e.user_message_id
+                JOIN messages am ON am.id = e.assistant_message_id
+                LEFT JOIN favorites f ON f.invocation_id = e.id WHERE e.id = ?1
+                UNION ALL
+                SELECT a.id, a.action_id, a.action_id, substr(a.output, 1, 240), a.status,
+                       a.provider_id, a.model_id, a.updated_at_ms,
+                       CASE WHEN f.invocation_id IS NULL THEN 0 ELSE 1 END,
+                       coalesce(f.note, ''), a.input, a.output
+                FROM action_executions a LEFT JOIN favorites f ON f.invocation_id = a.id
+                WHERE a.id = ?1
+            )
+            SELECT * FROM history LIMIT 1",
+            [invocation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, bool>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(sql_error)?;
+    row.map(
+        |(
+            id,
+            action,
+            title,
+            preview,
+            status,
+            provider,
+            model,
+            updated,
+            favorite,
+            note,
+            input,
+            output,
+        )| {
+            let item = history_item((
+                id, action, title, preview, status, provider, model, updated, favorite, note,
+            ))?;
+            Ok(HistoryDetail {
+                item,
+                input,
+                output,
+            })
+        },
+    )
+    .transpose()
+}
+
+#[allow(clippy::type_complexity)]
+fn history_item(
+    row: (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        bool,
+        String,
+    ),
+) -> Result<HistoryItem, StorageError> {
+    let (
+        id,
+        action,
+        title,
+        preview,
+        status,
+        provider_id,
+        model_id,
+        updated_at_ms,
+        favorite,
+        favorite_note,
+    ) = row;
+    Ok(HistoryItem {
+        invocation_id: InvocationId::parse(id).map_err(StorageError::Sql)?,
+        action: action
+            .parse::<QualifiedActionId>()
+            .map_err(StorageError::Sql)?,
+        title,
+        preview,
+        status: parse_status(&status),
+        provider_id,
+        model_id,
+        updated_at_ms,
+        favorite,
+        favorite_note,
+    })
+}
+
+fn delete_history(connection: &mut Connection, invocation_id: &str) -> Result<(), StorageError> {
+    let transaction = connection.transaction().map_err(sql_error)?;
+    transaction
+        .execute(
+            "INSERT INTO execution_deletions(invocation_id, deleted_at_ms) VALUES (?1, ?2)
+         ON CONFLICT(invocation_id) DO UPDATE SET deleted_at_ms = excluded.deleted_at_ms",
+            params![invocation_id, now_ms()],
+        )
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "DELETE FROM favorites WHERE invocation_id = ?1",
+            [invocation_id],
+        )
+        .map_err(sql_error)?;
+    let chat: Option<(String, String, String)> = transaction.query_row(
+        "SELECT conversation_id, user_message_id, assistant_message_id FROM executions WHERE id = ?1",
+        [invocation_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional().map_err(sql_error)?;
+    transaction
+        .execute("DELETE FROM executions WHERE id = ?1", [invocation_id])
+        .map_err(sql_error)?;
+    transaction
+        .execute(
+            "DELETE FROM action_executions WHERE id = ?1",
+            [invocation_id],
+        )
+        .map_err(sql_error)?;
+    if let Some((conversation, user, assistant)) = chat {
+        transaction
+            .execute("DELETE FROM messages WHERE id = ?1", [assistant])
+            .map_err(sql_error)?;
+        transaction.execute(
+            "DELETE FROM messages WHERE id = ?1 AND NOT EXISTS(SELECT 1 FROM executions WHERE user_message_id = ?1)",
+            [user],
+        ).map_err(sql_error)?;
+        transaction.execute(
+            "DELETE FROM conversations WHERE id = ?1 AND NOT EXISTS(SELECT 1 FROM executions WHERE conversation_id = ?1)",
+            [conversation],
+        ).map_err(sql_error)?;
+    }
+    transaction.commit().map_err(sql_error)
+}
+
+fn clear_history(
+    connection: &mut Connection,
+    mode: ClearHistoryMode,
+    generation: u64,
+) -> Result<(), StorageError> {
+    let generation = sqlite_u64(generation, "retention generation")?;
+    let transaction = connection.transaction().map_err(sql_error)?;
+    transaction
+        .execute(
+            "UPDATE retention_state SET generation = ?1 WHERE singleton = 1",
+            [generation],
+        )
+        .map_err(sql_error)?;
+    match mode {
+        ClearHistoryMode::PreserveFavorites => {
+            transaction.execute("DELETE FROM action_executions WHERE id NOT IN (SELECT invocation_id FROM favorites)", []).map_err(sql_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM executions WHERE id NOT IN (SELECT invocation_id FROM favorites)",
+                    [],
+                )
+                .map_err(sql_error)?;
+            transaction.execute("DELETE FROM conversations WHERE id NOT IN (SELECT conversation_id FROM executions)", []).map_err(sql_error)?;
+        }
+        ClearHistoryMode::IncludeFavorites => {
+            transaction
+                .execute("DELETE FROM favorites", [])
+                .map_err(sql_error)?;
+            transaction
+                .execute("DELETE FROM action_executions", [])
+                .map_err(sql_error)?;
+            transaction
+                .execute("DELETE FROM conversations", [])
+                .map_err(sql_error)?;
+        }
+    }
+    transaction
+        .execute("DELETE FROM execution_deletions", [])
+        .map_err(sql_error)?;
+    transaction
+        .execute("DELETE FROM conversation_deletions", [])
+        .map_err(sql_error)?;
+    transaction.commit().map_err(sql_error)
 }
 
 fn contains_favorite(connection: &Connection, invocation_id: &str) -> Result<bool, StorageError> {
@@ -812,6 +1415,18 @@ fn status_name(status: ExecutionStatus) -> &'static str {
         ExecutionStatus::Failed => "failed",
         ExecutionStatus::Cancelled => "cancelled",
         ExecutionStatus::Interrupted => "interrupted",
+    }
+}
+
+fn parse_status(status: &str) -> ExecutionStatus {
+    match status {
+        "queued" => ExecutionStatus::Queued,
+        "running" => ExecutionStatus::Running,
+        "cancelling" => ExecutionStatus::Cancelling,
+        "completed" => ExecutionStatus::Completed,
+        "failed" => ExecutionStatus::Failed,
+        "cancelled" => ExecutionStatus::Cancelled,
+        _ => ExecutionStatus::Interrupted,
     }
 }
 
@@ -1099,6 +1714,139 @@ mod tests {
         assert_eq!(version, 99);
         assert!(!action_table);
         drop(connection);
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn ten_thousand_history_rows_use_stable_cursor_pages() {
+        use std::collections::HashSet;
+
+        let path = test_path();
+        let mut connection = open(&path).expect("database opens");
+        let transaction = connection.transaction().expect("transaction starts");
+        for index in 0..10_005_i64 {
+            let id = InvocationId::new();
+            transaction
+                .execute(
+                    "INSERT INTO action_executions(
+                        id, plugin_id, action_id, plugin_generation, provider_id, model_id,
+                        input, output, status, sequence, retention_generation, error,
+                        started_at_ms, updated_at_ms
+                     ) VALUES (?1, 'org.lexwisp.polish', 'org.lexwisp.polish/polish', 1,
+                               'fixture', 'fixture', ?2, ?3, 'completed', 2, 0, NULL, ?4, ?4)",
+                    params![
+                        id.as_str(),
+                        format!("input {index}"),
+                        format!("output {index}"),
+                        index
+                    ],
+                )
+                .expect("row inserts");
+        }
+        transaction.commit().expect("fixture commits");
+        drop(connection);
+
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let mut cursor = None;
+        let mut seen = HashSet::new();
+        loop {
+            let page = store
+                .query_history(HistoryQuery {
+                    cursor: cursor.clone(),
+                    limit: 73,
+                    ..HistoryQuery::default()
+                })
+                .expect("page loads");
+            assert!(page.items.len() <= 73);
+            for item in page.items {
+                assert!(seen.insert(item.invocation_id));
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 10_005);
+        owner.shutdown();
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn delete_and_clear_barriers_reject_late_action_checkpoints() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        let mut first = checkpoint(2, "first", ExecutionStatus::Completed);
+        first.chat = None;
+        first.snapshot.conversation_id = None;
+        first.snapshot.user_message_id = None;
+        first.snapshot.assistant_message_id = None;
+        let first_id = first.snapshot.invocation_id.clone();
+        store
+            .enqueue(first.clone(), true)
+            .expect("checkpoint enqueues")
+            .expect("receipt")
+            .wait()
+            .expect("checkpoint persists");
+        store
+            .delete_history(first_id.as_str())
+            .expect("history deletes");
+        first.snapshot.sequence = 3;
+        first.snapshot.output = "late delete".into();
+        store
+            .enqueue(first, true)
+            .expect("late checkpoint enqueues")
+            .expect("receipt")
+            .wait()
+            .expect("late checkpoint is ignored");
+        assert!(
+            store
+                .history_detail(first_id.as_str())
+                .expect("detail query")
+                .is_none()
+        );
+
+        let mut second = checkpoint(2, "second", ExecutionStatus::Completed);
+        second.chat = None;
+        second.snapshot.conversation_id = None;
+        second.snapshot.user_message_id = None;
+        second.snapshot.assistant_message_id = None;
+        let second_id = second.snapshot.invocation_id.clone();
+        store
+            .enqueue(second.clone(), true)
+            .expect("checkpoint enqueues")
+            .expect("receipt")
+            .wait()
+            .expect("checkpoint persists");
+        store
+            .set_favorite(second_id.as_str(), true, "keep")
+            .expect("favorite saves");
+        store
+            .clear_history(ClearHistoryMode::PreserveFavorites, 1)
+            .expect("history clears");
+        let page = store
+            .query_history(HistoryQuery {
+                limit: 10,
+                ..HistoryQuery::default()
+            })
+            .expect("history loads");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].favorite_note, "keep");
+        second.snapshot.sequence = 3;
+        second.snapshot.output = "late clear".into();
+        store
+            .enqueue(second, true)
+            .expect("late checkpoint enqueues")
+            .expect("receipt")
+            .wait()
+            .expect("old generation is ignored");
+        let detail = store
+            .history_detail(second_id.as_str())
+            .expect("detail loads")
+            .expect("favorite remains");
+        assert_eq!(detail.output, "second");
+        owner.shutdown();
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");
     }

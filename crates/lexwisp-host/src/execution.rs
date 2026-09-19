@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -38,6 +39,7 @@ struct ExecutionAccumulator {
     dirty_bytes: usize,
     last_ui_flush: Instant,
     last_checkpoint: Instant,
+    persist: bool,
 }
 
 impl ExecutionAccumulator {
@@ -54,13 +56,87 @@ impl ExecutionAccumulator {
 pub struct ExecutionStore {
     entries: Arc<Mutex<HashMap<InvocationId, ExecutionAccumulator>>>,
     storage: ContentStore,
+    recording_enabled: Arc<AtomicBool>,
+    retention_generation: Arc<AtomicU64>,
 }
 
 impl ExecutionStore {
-    pub fn new(storage: ContentStore) -> Self {
+    pub fn new(storage: ContentStore, recording_enabled: bool, retention_generation: u64) -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             storage,
+            recording_enabled: Arc::new(AtomicBool::new(recording_enabled)),
+            retention_generation: Arc::new(AtomicU64::new(retention_generation)),
+        }
+    }
+
+    pub fn recording_enabled(&self) -> bool {
+        self.recording_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn retention_generation(&self) -> u64 {
+        self.retention_generation.load(Ordering::Acquire)
+    }
+
+    pub fn set_recording_enabled(&self, enabled: bool) {
+        self.recording_enabled.store(enabled, Ordering::Release);
+        if !enabled {
+            self.advance_retention_generation();
+        }
+    }
+
+    pub fn advance_retention_generation(&self) -> u64 {
+        let generation = self
+            .retention_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let _ = self.storage.set_retention_generation(generation);
+        let notifications = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries
+                .values_mut()
+                .filter(|entry| !entry.snapshot.status.is_terminal())
+                .map(|entry| {
+                    entry.persist = false;
+                    entry.snapshot.storage = StorageState::NotRecorded;
+                    entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
+                    (entry.observer.clone(), entry.snapshot.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        for (observer, snapshot) in notifications {
+            observer.on_execution(snapshot);
+        }
+        generation
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|entry| !entry.snapshot.status.is_terminal())
+            .count()
+    }
+
+    pub fn revoke_persistence(&self, invocation_id: &InvocationId) {
+        let notification = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries.get_mut(invocation_id).map(|entry| {
+                entry.persist = false;
+                entry.snapshot.storage = StorageState::NotRecorded;
+                entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
+                (entry.observer.clone(), entry.snapshot.clone())
+            })
+        };
+        if let Some((observer, snapshot)) = notification {
+            observer.on_execution(snapshot);
         }
     }
 
@@ -81,8 +157,12 @@ impl ExecutionStore {
             status: ExecutionStatus::Running,
             output: String::new(),
             error: None,
-            storage: StorageState::Pending,
-            retention_generation: 0,
+            storage: if self.recording_enabled() {
+                StorageState::Pending
+            } else {
+                StorageState::NotRecorded
+            },
+            retention_generation: self.retention_generation(),
         };
         let accumulator = ExecutionAccumulator {
             snapshot: snapshot.clone(),
@@ -92,6 +172,7 @@ impl ExecutionStore {
             dirty_bytes: 0,
             last_ui_flush: now.checked_sub(UI_FLUSH_INTERVAL).unwrap_or(now),
             last_checkpoint: now,
+            persist: self.recording_enabled(),
         };
         let checkpoint = accumulator.checkpoint();
         self.entries
@@ -99,7 +180,7 @@ impl ExecutionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(snapshot.invocation_id.clone(), accumulator);
         start.observer.on_execution(snapshot.clone());
-        if self.storage.enqueue(checkpoint, false).is_err() {
+        if self.recording_enabled() && self.storage.enqueue(checkpoint, false).is_err() {
             self.mark_unsaved(&snapshot.invocation_id);
         }
         snapshot
@@ -144,13 +225,16 @@ impl ExecutionStore {
             {
                 entry.last_checkpoint = now;
                 entry.dirty_bytes = 0;
-                checkpoint = Some(entry.checkpoint());
+                if entry.persist {
+                    checkpoint = Some(entry.checkpoint());
+                }
             }
         }
         if let Some((observer, snapshot)) = notify {
             observer.on_execution(snapshot);
         }
-        if let Some(checkpoint) = checkpoint
+        if self.recording_enabled()
+            && let Some(checkpoint) = checkpoint
             && self.storage.enqueue(checkpoint, false).is_err()
         {
             self.mark_unsaved(invocation_id);
@@ -186,7 +270,7 @@ impl ExecutionStore {
         if !status.is_terminal() {
             return Err("terminal commit requires a terminal status".into());
         }
-        let (observer, pending, checkpoint) = {
+        let (observer, pending, checkpoint, persist) = {
             let mut entries = self
                 .entries
                 .lock()
@@ -200,25 +284,39 @@ impl ExecutionStore {
             entry.snapshot.status = status;
             entry.snapshot.error = error;
             entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
-            entry.snapshot.storage = StorageState::Pending;
+            entry.snapshot.storage = if self.recording_enabled() {
+                StorageState::Pending
+            } else {
+                StorageState::NotRecorded
+            };
             (
                 entry.observer.clone(),
                 entry.snapshot.clone(),
                 entry.checkpoint(),
+                entry.persist,
             )
         };
         observer.on_execution(pending);
 
-        let storage = self.storage.clone();
-        let persisted = tokio::task::spawn_blocking(move || {
-            storage
-                .enqueue(checkpoint, true)?
-                .ok_or(lexwisp_storage::StorageError::Closed)?
-                .wait()
-        })
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|result| result.map_err(|error| error.to_string()));
+        let persisted = if persist
+            && self.recording_enabled()
+            && checkpoint.snapshot.retention_generation == self.retention_generation()
+        {
+            let storage = self.storage.clone();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    storage
+                        .enqueue(checkpoint, true)?
+                        .ok_or(lexwisp_storage::StorageError::Closed)?
+                        .wait()
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string())),
+            )
+        } else {
+            None
+        };
 
         let (observer, final_snapshot) = {
             let mut entries = self
@@ -228,10 +326,10 @@ impl ExecutionStore {
             let entry = entries
                 .get_mut(invocation_id)
                 .ok_or_else(|| "execution disappeared during terminal persistence".to_string())?;
-            entry.snapshot.storage = if persisted.is_ok() {
-                StorageState::Saved
-            } else {
-                StorageState::Unsaved
+            entry.snapshot.storage = match persisted {
+                Some(Ok(())) => StorageState::Saved,
+                Some(Err(_)) => StorageState::Unsaved,
+                None => StorageState::NotRecorded,
             };
             entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
             (entry.observer.clone(), entry.snapshot.clone())
@@ -246,6 +344,55 @@ impl ExecutionStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(invocation_id)
             .map(|entry| entry.snapshot.clone())
+    }
+
+    pub async fn persist_for_favorite(&self, invocation_id: &InvocationId) -> Result<(), String> {
+        let (checkpoint, observer, pending) = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = entries
+                .get_mut(invocation_id)
+                .ok_or_else(|| "execution is no longer available in memory".to_string())?;
+            if !entry.snapshot.status.is_terminal() {
+                return Err("wait for the execution to finish before preserving it".into());
+            }
+            entry.snapshot.retention_generation = self.retention_generation();
+            entry.snapshot.storage = StorageState::Pending;
+            entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
+            (
+                entry.checkpoint(),
+                entry.observer.clone(),
+                entry.snapshot.clone(),
+            )
+        };
+        observer.on_execution(pending);
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || {
+            storage
+                .enqueue(checkpoint, true)?
+                .ok_or(lexwisp_storage::StorageError::Closed)?
+                .wait()
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let notification = {
+            let mut entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            entries.get_mut(invocation_id).map(|entry| {
+                entry.snapshot.storage = StorageState::Saved;
+                entry.snapshot.sequence = entry.snapshot.sequence.saturating_add(1);
+                (entry.observer.clone(), entry.snapshot.clone())
+            })
+        };
+        if let Some((observer, snapshot)) = notification {
+            observer.on_execution(snapshot);
+        }
+        Ok(())
     }
 
     fn mark_unsaved(&self, invocation_id: &InvocationId) {
@@ -295,7 +442,7 @@ mod tests {
             ))
             .join("lexwisp.db");
         let (owner, content) = ContentStoreOwner::start(path).expect("content store starts");
-        let store = ExecutionStore::new(content);
+        let store = ExecutionStore::new(content, true, 0);
         let invocation_id = InvocationId::new();
         let plugin = PluginId::parse("org.lexwisp.chat").expect("plugin ID");
         let action =
@@ -333,6 +480,51 @@ mod tests {
                 .expect("delta applies");
         }
         assert!(store.storage.enqueued_checkpoints() < 20);
+        owner.shutdown();
+    }
+
+    #[test]
+    fn disabling_recording_revokes_running_checkpoint_writes() {
+        let (owner, store, invocation_id) = fixture();
+        let before = store.storage.enqueued_checkpoints();
+        store.set_recording_enabled(false);
+        store
+            .append_text(&invocation_id, 1, &"x".repeat(CHECKPOINT_BYTES + 1))
+            .expect("the in-memory result remains usable");
+        assert_eq!(store.storage.enqueued_checkpoints(), before);
+        assert_eq!(store.storage.retention_generation().expect("generation"), 1);
+        assert_eq!(
+            store.snapshot(&invocation_id).expect("snapshot").storage,
+            StorageState::NotRecorded
+        );
+        owner.shutdown();
+    }
+
+    #[tokio::test]
+    async fn explicit_favorite_can_preserve_a_terminal_unrecorded_result() {
+        let (owner, store, invocation_id) = fixture();
+        store.set_recording_enabled(false);
+        store
+            .append_text(&invocation_id, 1, "answer")
+            .expect("answer remains in memory");
+        store
+            .commit_terminal(&invocation_id, ExecutionStatus::Completed, None)
+            .await
+            .expect("terminal state commits in memory");
+        assert_eq!(
+            store.snapshot(&invocation_id).expect("snapshot").storage,
+            StorageState::NotRecorded
+        );
+        store
+            .persist_for_favorite(&invocation_id)
+            .await
+            .expect("explicit preservation writes the authoritative body");
+        let detail = store
+            .storage
+            .history_detail(invocation_id.as_str())
+            .expect("history query")
+            .expect("preserved execution exists");
+        assert_eq!(detail.output, "answer");
         owner.shutdown();
     }
 }

@@ -266,7 +266,10 @@ impl DeclarativeController {
         });
     }
 
-    async fn execute_request(&self, request: ActionRequest) -> Result<ActionResult, ActionError> {
+    async fn execute_request(
+        &self,
+        mut request: ActionRequest,
+    ) -> Result<ActionResult, ActionError> {
         let input = request.input.trim().to_owned();
         if input.is_empty() {
             return Err(ActionError::Failed("input is empty".into()));
@@ -280,6 +283,19 @@ impl DeclarativeController {
             return Err(ActionError::Failed(
                 "this action does not allow the selected input source".into(),
             ));
+        }
+        if let Some(defaults) = self
+            .settings
+            .snapshot()
+            .settings()
+            .action_parameter_defaults(&self.descriptor.qualified_id().to_string())
+        {
+            for (key, value) in defaults {
+                request
+                    .parameters
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
         }
         {
             let mut state = self

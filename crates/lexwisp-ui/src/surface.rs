@@ -7,8 +7,8 @@ use gpui_kit::{
     WindowOptions, div, px, size,
 };
 use lexwisp_core::{
-    ActionDescriptor, ChatUiPort, ContextSnapshot, ProviderUiPort, SettingsUiPort, SurfaceKind,
-    TextActionUiPort, ThemePreference,
+    ActionDescriptor, ChatUiPort, ContextSnapshot, HistoryUiPort, ProviderUiPort, SettingsUiPort,
+    SurfaceKind, TextActionUiPort, ThemePreference,
 };
 
 use crate::control_center::ControlCenter;
@@ -42,6 +42,7 @@ pub struct SurfaceController {
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
     chat: Arc<dyn ChatUiPort>,
+    history: Arc<dyn HistoryUiPort>,
     text_actions: Vec<Arc<dyn TextActionUiPort>>,
     launches: async_channel::Sender<ContextSnapshot>,
     action_descriptors: Vec<ActionDescriptor>,
@@ -54,6 +55,7 @@ pub struct SurfaceServices {
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
     chat: Arc<dyn ChatUiPort>,
+    history: Arc<dyn HistoryUiPort>,
     text_actions: Vec<Arc<dyn TextActionUiPort>>,
     action_descriptors: Vec<ActionDescriptor>,
 }
@@ -63,6 +65,7 @@ impl SurfaceServices {
         settings: Arc<dyn SettingsUiPort>,
         providers: Arc<dyn ProviderUiPort>,
         chat: Arc<dyn ChatUiPort>,
+        history: Arc<dyn HistoryUiPort>,
         text_actions: Vec<Arc<dyn TextActionUiPort>>,
         action_descriptors: Vec<ActionDescriptor>,
     ) -> Self {
@@ -70,6 +73,7 @@ impl SurfaceServices {
             settings,
             providers,
             chat,
+            history,
             text_actions,
             action_descriptors,
         }
@@ -95,6 +99,7 @@ impl SurfaceController {
             settings: services.settings,
             providers: services.providers,
             chat: services.chat,
+            history: services.history,
             text_actions: services.text_actions,
             launches,
             action_descriptors: services.action_descriptors,
@@ -268,6 +273,7 @@ impl SurfaceController {
         let settings = self.settings.clone();
         let providers = self.providers.clone();
         let action_descriptors = self.action_descriptors.clone();
+        let history = self.history.clone();
         let quick_shell_factory = self.quick_shell_factory.clone();
         let chat_panel_factory = self.chat_panel_factory.clone();
         let preference = settings.snapshot().settings().theme();
@@ -299,6 +305,7 @@ impl SurfaceController {
                         ControlCenter::new(
                             settings.clone(),
                             providers.clone(),
+                            history.clone(),
                             action_descriptors.clone(),
                             window,
                             cx,

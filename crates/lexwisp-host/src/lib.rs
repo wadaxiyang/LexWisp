@@ -2,6 +2,7 @@ mod ai;
 mod declarative;
 mod execution;
 mod favorites;
+mod history;
 mod invocation;
 mod providers;
 mod registry;
@@ -13,7 +14,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use async_channel::Sender;
 use lexwisp_core::{
     ActionUiPort, AppSettings, ChatHistoryPort, ChatRunPort, ContextUiPort, FavoriteUiPort,
-    HostUiCommand, PluginId, ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
+    HistoryUiPort, HostUiCommand, PluginId, ProviderUiPort, SettingsUiPort, TaskOwner, TextRunPort,
 };
 use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
@@ -31,6 +32,7 @@ pub use ai::AiService;
 pub use declarative::{DeclarativeController, DeclarativePackage};
 pub use execution::ExecutionStore;
 pub use favorites::FavoriteService;
+pub use history::HistoryService;
 pub use invocation::InvocationSupervisor;
 pub use providers::{ProviderRegistry, ProviderService};
 
@@ -58,6 +60,7 @@ pub struct HostHandles {
     action_ui: Arc<dyn ActionUiPort>,
     context: Arc<dyn ContextUiPort>,
     favorites: Arc<dyn FavoriteUiPort>,
+    history: Arc<dyn HistoryUiPort>,
     chat_history: Arc<dyn ChatHistoryPort>,
     executions: Arc<ExecutionStore>,
     supervisor: Arc<InvocationSupervisor>,
@@ -99,6 +102,10 @@ impl HostHandles {
 
     pub fn favorites(&self) -> Arc<dyn FavoriteUiPort> {
         self.favorites.clone()
+    }
+
+    pub fn history(&self) -> Arc<dyn HistoryUiPort> {
+        self.history.clone()
     }
 
     pub fn chat_history(&self) -> Arc<dyn ChatHistoryPort> {
@@ -150,9 +157,13 @@ impl Host {
         ui_commands: Sender<HostUiCommand>,
         executable: PathBuf,
     ) -> Result<(Self, HostHandles), String> {
-        let database_path = config.data_directory().join("lexwisp.db");
+        let data_directory = config.data_directory().to_path_buf();
+        let database_path = data_directory.join("lexwisp.db");
         let (content_owner, content) =
             ContentStoreOwner::start(database_path).map_err(|error| error.to_string())?;
+        let retention_generation = content
+            .retention_generation()
+            .map_err(|error| error.to_string())?;
         let runtime = Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("lexwisp-business")
@@ -161,23 +172,30 @@ impl Host {
             .map_err(|error| format!("could not start the business runtime: {error}"))?;
         let tasks = HostTaskPort::new(runtime.handle().clone());
         let process_tasks = tasks.scope(TaskOwner::Process);
+        let executions = Arc::new(ExecutionStore::new(
+            content.clone(),
+            initial_settings.recording_enabled(),
+            retention_generation,
+        ));
+        let provider_registry = ProviderRegistry::new(&initial_settings);
         let settings_service = Arc::new(SettingsService::new(
             initial_settings,
             config,
             shell,
             executable,
             process_tasks.clone(),
+            executions.clone(),
+            provider_registry.clone(),
         ));
         let settings: Arc<dyn SettingsUiPort> = settings_service.clone();
         let plugins = PluginRegistry::default();
         let actions = plugins.actions();
         let capabilities = CapabilityAuthority::default();
-        let provider_registry = ProviderRegistry::new(settings.snapshot().settings());
         let credentials: Arc<dyn lexwisp_core::CredentialStore> = Arc::new(WindowsCredentialStore);
         let ai = Arc::new(AiService::new().map_err(|error| error.to_string())?);
-        let favorites: Arc<dyn FavoriteUiPort> = Arc::new(FavoriteService::new(content.clone()));
+        let favorite_service = Arc::new(FavoriteService::new(content.clone(), executions.clone())?);
+        let favorites: Arc<dyn FavoriteUiPort> = favorite_service.clone();
         let chat_history: Arc<dyn ChatHistoryPort> = Arc::new(content.clone());
-        let executions = Arc::new(ExecutionStore::new(content));
         let supervisor = Arc::new(InvocationSupervisor::new(
             ai.clone(),
             provider_registry.clone(),
@@ -185,13 +203,22 @@ impl Host {
             executions.clone(),
         ));
         let providers: Arc<dyn ProviderUiPort> = Arc::new(ProviderService::new(
-            settings_service,
+            settings_service.clone(),
             provider_registry,
             credentials,
             ai,
-            process_tasks,
+            process_tasks.clone(),
         ));
         let action_ui: Arc<dyn ActionUiPort> = Arc::new(ActionUiService::new(actions.clone()));
+        let history: Arc<dyn HistoryUiPort> = Arc::new(HistoryService::new(
+            content,
+            executions.clone(),
+            favorite_service,
+            action_ui.clone(),
+            settings_service,
+            process_tasks,
+            data_directory,
+        ));
         let handles = HostHandles {
             plugins,
             actions,
@@ -202,6 +229,7 @@ impl Host {
             action_ui,
             context: Arc::new(context),
             favorites,
+            history,
             chat_history,
             executions,
             supervisor: supervisor.clone(),

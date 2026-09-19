@@ -4,6 +4,7 @@ mod command;
 mod context;
 mod execution;
 mod file;
+mod history;
 mod ids;
 mod plugin;
 mod provider;
@@ -29,6 +30,10 @@ pub use execution::{
     StorageState,
 };
 pub use file::{AtomicFileWriter, FileWriteError};
+pub use history::{
+    ClearHistoryMode, DiagnosticsSnapshot, HistoryCursor, HistoryDetail, HistoryError,
+    HistoryFuture, HistoryItem, HistoryPage, HistoryQuery, HistoryUiPort,
+};
 pub use ids::{AttemptId, ContextToken, ConversationId, InvocationId, MessageId};
 pub use plugin::{
     ActionDescriptor, ActionError, ActionFuture, ActionHandler, ActionId, ActionInputSource,

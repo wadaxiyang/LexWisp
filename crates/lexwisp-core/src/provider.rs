@@ -36,6 +36,18 @@ pub struct ProviderConfig {
     stream: bool,
     #[serde(default = "default_context_budget")]
     context_budget: usize,
+    #[serde(default)]
+    proxy_url: Option<String>,
+    #[serde(default = "default_connect_timeout_seconds")]
+    connect_timeout_seconds: u64,
+    #[serde(default = "default_total_timeout_seconds")]
+    total_timeout_seconds: u64,
+    #[serde(default = "default_event_timeout_seconds")]
+    event_timeout_seconds: u64,
+    #[serde(default)]
+    temperature_milli: Option<u16>,
+    #[serde(default)]
+    max_output_tokens: Option<u32>,
 }
 
 impl ProviderConfig {
@@ -55,6 +67,12 @@ impl ProviderConfig {
             model_ids,
             stream,
             context_budget: default_context_budget(),
+            proxy_url: None,
+            connect_timeout_seconds: default_connect_timeout_seconds(),
+            total_timeout_seconds: default_total_timeout_seconds(),
+            event_timeout_seconds: default_event_timeout_seconds(),
+            temperature_milli: None,
+            max_output_tokens: None,
         }
     }
 
@@ -90,10 +108,65 @@ impl ProviderConfig {
         self.context_budget = context_budget;
         self
     }
+
+    pub fn proxy_url(&self) -> Option<&str> {
+        self.proxy_url.as_deref()
+    }
+
+    pub const fn connect_timeout_seconds(&self) -> u64 {
+        self.connect_timeout_seconds
+    }
+
+    pub const fn total_timeout_seconds(&self) -> u64 {
+        self.total_timeout_seconds
+    }
+
+    pub const fn event_timeout_seconds(&self) -> u64 {
+        self.event_timeout_seconds
+    }
+
+    pub const fn temperature_milli(&self) -> Option<u16> {
+        self.temperature_milli
+    }
+
+    pub const fn max_output_tokens(&self) -> Option<u32> {
+        self.max_output_tokens
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_advanced_options(
+        mut self,
+        context_budget: usize,
+        proxy_url: Option<String>,
+        connect_timeout_seconds: u64,
+        total_timeout_seconds: u64,
+        event_timeout_seconds: u64,
+        temperature_milli: Option<u16>,
+        max_output_tokens: Option<u32>,
+    ) -> Self {
+        self.context_budget = context_budget;
+        self.proxy_url = proxy_url;
+        self.connect_timeout_seconds = connect_timeout_seconds;
+        self.total_timeout_seconds = total_timeout_seconds;
+        self.event_timeout_seconds = event_timeout_seconds;
+        self.temperature_milli = temperature_milli;
+        self.max_output_tokens = max_output_tokens;
+        self
+    }
 }
 
 const fn default_context_budget() -> usize {
     8_192
+}
+
+const fn default_connect_timeout_seconds() -> u64 {
+    10
+}
+const fn default_total_timeout_seconds() -> u64 {
+    180
+}
+const fn default_event_timeout_seconds() -> u64 {
+    60
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -139,6 +212,13 @@ pub struct ProviderDraft {
     pub stream: bool,
     pub use_authentication: bool,
     pub api_key: Option<String>,
+    pub context_budget: String,
+    pub proxy_url: String,
+    pub connect_timeout_seconds: String,
+    pub total_timeout_seconds: String,
+    pub event_timeout_seconds: String,
+    pub temperature: String,
+    pub max_output_tokens: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +232,13 @@ pub struct ProviderUiSnapshot {
     pub use_authentication: bool,
     pub has_saved_credential: bool,
     pub generation: u64,
+    pub context_budget: usize,
+    pub proxy_url: String,
+    pub connect_timeout_seconds: u64,
+    pub total_timeout_seconds: u64,
+    pub event_timeout_seconds: u64,
+    pub temperature_milli: Option<u16>,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

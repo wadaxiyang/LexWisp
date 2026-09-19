@@ -30,6 +30,7 @@ pub enum StorageState {
     Pending,
     Saved,
     Unsaved,
+    NotRecorded,
 }
 
 #[derive(Clone, Debug)]

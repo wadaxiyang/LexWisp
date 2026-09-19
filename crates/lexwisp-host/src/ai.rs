@@ -1,22 +1,23 @@
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use futures_util::StreamExt as _;
 use lexwisp_core::{AiMessage, AiRole, ProviderConfig, ProviderError};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Proxy, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
-const TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AiService {
-    client: Client,
+    clients: Arc<RwLock<HashMap<String, Client>>>,
 }
 
 #[derive(Serialize)]
@@ -30,12 +31,36 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<RequestMessage<'a>>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 impl AiService {
     pub fn new() -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
+        Ok(Self {
+            clients: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    fn client_for(&self, provider: &ProviderConfig) -> Result<Client, ProviderError> {
+        let key = format!(
+            "{}|{}",
+            provider.proxy_url().unwrap_or_default(),
+            provider.connect_timeout_seconds()
+        );
+        if let Some(client) = self
+            .clients
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned()
+        {
+            return Ok(client);
+        }
+        let mut builder = Client::builder()
+            .connect_timeout(Duration::from_secs(provider.connect_timeout_seconds()))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() > 5 {
                     return attempt.error("too many redirects");
@@ -46,10 +71,20 @@ impl AiService {
                     return attempt.error("cross-origin redirects are not allowed");
                 }
                 attempt.follow()
-            }))
+            }));
+        if let Some(proxy) = provider.proxy_url() {
+            builder = builder.proxy(Proxy::all(proxy).map_err(|error| {
+                ProviderError::InvalidConfiguration(format!("proxy URL is invalid: {error}"))
+            })?);
+        }
+        let client = builder
             .build()
             .map_err(|error| ProviderError::Http(error.to_string()))?;
-        Ok(Self { client })
+        self.clients
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, client.clone());
+        Ok(client)
     }
 
     pub async fn chat(
@@ -77,11 +112,15 @@ impl AiService {
             model: model_id,
             messages: request_messages,
             stream: provider.stream(),
+            temperature: provider
+                .temperature_milli()
+                .map(|value| f64::from(value) / 1_000.0),
+            max_tokens: provider.max_output_tokens(),
         };
         let mut request = self
-            .client
+            .client_for(provider)?
             .post(endpoint)
-            .timeout(TOTAL_TIMEOUT)
+            .timeout(Duration::from_secs(provider.total_timeout_seconds()))
             .json(&body);
         if let Some(credential) = credential {
             request = request.bearer_auth(credential);
@@ -94,7 +133,13 @@ impl AiService {
             return Err(http_status_error(&response));
         }
         if provider.stream() {
-            read_stream(response, cancellation, &mut on_delta).await
+            read_stream(
+                response,
+                cancellation,
+                &mut on_delta,
+                Duration::from_secs(provider.event_timeout_seconds()),
+            )
+            .await
         } else {
             let bytes = tokio::select! {
                 _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
@@ -122,6 +167,7 @@ async fn read_stream(
     response: reqwest::Response,
     cancellation: &CancellationToken,
     on_delta: &mut impl FnMut(String) -> Result<(), ProviderError>,
+    event_timeout: Duration,
 ) -> Result<String, ProviderError> {
     let mut stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
@@ -131,7 +177,7 @@ async fn read_stream(
     loop {
         let next = tokio::select! {
             _ = cancellation.cancelled() => return Err(ProviderError::Cancelled),
-            next = timeout(EVENT_TIMEOUT, stream.next()) => {
+            next = timeout(event_timeout, stream.next()) => {
                 next.map_err(|_| ProviderError::Timeout(if output.is_empty() { "the first event" } else { "the next stream event" }))?
             }
         };

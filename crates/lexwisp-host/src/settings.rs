@@ -1,11 +1,14 @@
-use std::{path::PathBuf, sync::RwLock};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
+};
 
 use lexwisp_core::{AppSettings, SettingsError, SettingsFuture, SettingsSnapshot, SettingsUiPort};
 use lexwisp_platform_windows::WindowsShellHandle;
 use lexwisp_storage::ConfigStore;
 use tokio::sync::Mutex;
 
-use crate::TaskScope;
+use crate::{ExecutionStore, ProviderRegistry, TaskScope};
 
 pub struct SettingsService {
     current: RwLock<SettingsSnapshot>,
@@ -14,6 +17,8 @@ pub struct SettingsService {
     shell: WindowsShellHandle,
     executable: PathBuf,
     tasks: TaskScope,
+    executions: Arc<ExecutionStore>,
+    providers: ProviderRegistry,
 }
 
 impl SettingsService {
@@ -23,6 +28,8 @@ impl SettingsService {
         shell: WindowsShellHandle,
         executable: PathBuf,
         tasks: TaskScope,
+        executions: Arc<ExecutionStore>,
+        providers: ProviderRegistry,
     ) -> Self {
         Self {
             current: RwLock::new(SettingsSnapshot::new(initial, 0)),
@@ -31,7 +38,13 @@ impl SettingsService {
             shell,
             executable,
             tasks,
+            executions,
+            providers,
         }
+    }
+
+    pub fn config_path(&self) -> &Path {
+        self.config.path()
     }
 
     async fn apply_inner(&self, settings: AppSettings) -> Result<SettingsSnapshot, SettingsError> {
@@ -80,7 +93,22 @@ impl SettingsService {
             .current
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = next.clone();
+        self.providers.replace(next.settings(), next.generation());
+        if next.settings().recording_enabled() != previous_settings.recording_enabled() {
+            self.executions
+                .set_recording_enabled(next.settings().recording_enabled());
+        }
         Ok(next)
+    }
+
+    async fn reload_inner(&self) -> Result<SettingsSnapshot, SettingsError> {
+        let config = self.config.clone();
+        let loaded = self
+            .tasks
+            .spawn_blocking(move || config.load())
+            .await
+            .map_err(|error| SettingsError::Load(error.to_string()))??;
+        self.apply_inner(loaded.settings().clone()).await
     }
 }
 
@@ -94,5 +122,9 @@ impl SettingsUiPort for SettingsService {
 
     fn apply(&self, settings: AppSettings) -> SettingsFuture<'_> {
         Box::pin(self.apply_inner(settings))
+    }
+
+    fn reload(&self) -> SettingsFuture<'_> {
+        Box::pin(self.reload_inner())
     }
 }

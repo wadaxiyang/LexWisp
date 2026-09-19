@@ -107,6 +107,10 @@ pub struct AppSettings {
     default_action_id: Option<String>,
     #[serde(default)]
     dismiss_overrides: BTreeMap<String, DismissPolicy>,
+    #[serde(default = "default_recording_enabled")]
+    recording_enabled: bool,
+    #[serde(default)]
+    action_parameter_defaults: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -125,6 +129,8 @@ impl Default for AppSettings {
             translation_action_id: default_translation_action(),
             default_action_id: None,
             dismiss_overrides: BTreeMap::new(),
+            recording_enabled: true,
+            action_parameter_defaults: BTreeMap::new(),
             providers: Vec::new(),
             default_profile: None,
         }
@@ -168,13 +174,31 @@ impl AppSettings {
                 .parse::<crate::QualifiedActionId>()
                 .map_err(SettingsError::Invalid)?;
         }
-        if self
-            .providers
-            .iter()
-            .any(|provider| provider.context_budget() == 0)
-        {
+        for (action, parameters) in &self.action_parameter_defaults {
+            action
+                .parse::<crate::QualifiedActionId>()
+                .map_err(SettingsError::Invalid)?;
+            if parameters
+                .iter()
+                .any(|(key, value)| key.trim().is_empty() || value.len() > 256)
+            {
+                return Err(SettingsError::Invalid(
+                    "action parameter defaults contain an invalid key or value".into(),
+                ));
+            }
+        }
+        if self.providers.iter().any(|provider| {
+            provider.context_budget() == 0
+                || !(1..=120).contains(&provider.connect_timeout_seconds())
+                || !(1..=600).contains(&provider.total_timeout_seconds())
+                || !(1..=300).contains(&provider.event_timeout_seconds())
+                || provider
+                    .temperature_milli()
+                    .is_some_and(|temperature| temperature > 2_000)
+                || provider.max_output_tokens() == Some(0)
+        }) {
             return Err(SettingsError::Invalid(
-                "provider context budget must be greater than zero".into(),
+                "provider context budget, timeouts, temperature, or output limit is invalid".into(),
             ));
         }
         if let Some(profile) = &self.default_profile {
@@ -259,6 +283,14 @@ impl AppSettings {
         &self.providers
     }
 
+    pub const fn recording_enabled(&self) -> bool {
+        self.recording_enabled
+    }
+
+    pub fn action_parameter_defaults(&self, action: &str) -> Option<&BTreeMap<String, String>> {
+        self.action_parameter_defaults.get(action)
+    }
+
     pub const fn default_profile(&self) -> Option<&ModelProfile> {
         self.default_profile.as_ref()
     }
@@ -311,6 +343,24 @@ impl AppSettings {
         self
     }
 
+    pub fn with_recording_enabled(mut self, enabled: bool) -> Self {
+        self.recording_enabled = enabled;
+        self
+    }
+
+    pub fn with_action_parameter_default(
+        mut self,
+        action: impl Into<String>,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.action_parameter_defaults
+            .entry(action.into())
+            .or_default()
+            .insert(key.into(), value.into());
+        self
+    }
+
     pub fn with_provider(mut self, provider: ProviderConfig, profile: ModelProfile) -> Self {
         self.providers
             .retain(|existing| existing.id() != provider.id());
@@ -322,6 +372,10 @@ impl AppSettings {
 
 fn default_translation_action() -> String {
     "org.lexwisp.translate/translate".into()
+}
+
+const fn default_recording_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -367,6 +421,7 @@ pub type SettingsFuture<'a> =
 pub trait SettingsUiPort: Send + Sync {
     fn snapshot(&self) -> SettingsSnapshot;
     fn apply(&self, settings: AppSettings) -> SettingsFuture<'_>;
+    fn reload(&self) -> SettingsFuture<'_>;
 }
 
 #[cfg(test)]

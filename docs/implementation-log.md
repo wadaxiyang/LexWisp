@@ -359,3 +359,58 @@ The `computer-use` skill was read and initialized as required. Two lightweight i
 - close/reopen both surfaces during a stream, Stop and Regenerate, restart, and inspect restored completed/partial attempts and per-conversation model choice;
 - exercise a long conversation/sidebar, scroll upward during streaming to stop auto-follow, use jump-to-latest, select long Markdown, copy each fenced code block, and test Chinese IME candidate confirmation versus Enter/Shift+Enter;
 - repeat Windows 10, alternate DPI/multi-monitor layouts, clean-machine portability, long-run resource/GPU measurements, and a real compatible endpoint at their later/manual gates.
+
+## Stage 5 — 2026-09-19
+
+Status: **implemented and packaged; locked formatting/check/Clippy/test gates, the native hotkey fixture, Stage 05 Release launch, single-instance wake, schema-4 creation, 10,005-row cursor paging, retention barriers, config backup, and explicit preservation of an unrecorded favorite passed. Button-level Computer Use remains pending because the direct `@oai/sky` runtime reports that its trusted RPC service is not configured.**
+
+### Delivered manageable personal-tool slice
+
+- Added a typed history domain and `HistoryUiPort`; Host owns the service, while UI receives only typed snapshots and commands. History reads the authoritative Chat bodies from `messages` and non-Chat bodies from `action_executions`; it does not create a third body copy.
+- Migrated SQLite to schema 4 with action identity for Chat executions, annotated favorite references, per-execution deletion tombstones, and a singleton retention generation. The one existing SQLite worker/connection now performs query, favorite, delete, clear, backup, and retention operations through its bounded command queue.
+- Added stable `(updated_at_ms DESC, invocation_id ASC)` cursor paging capped at 100 rows, title/input/output basic search, plugin/status/favorite filters, detail loading, retry, and a 10,005-row regression proving complete duplicate-free traversal without loading all bodies into the UI.
+- Single-history deletion revokes its live `ExecutionStore` persistence eligibility before a transaction establishes the tombstone. Clear advances the global retention generation before deleting; the default path preserves favorite-referenced executions/content, while the explicit alternate path removes favorites too. Old-generation and tombstoned late checkpoints cannot recreate deleted data.
+- Added the automatic-recording setting. Turning it off advances the durable retention barrier and synchronously marks every running accumulator `NotRecorded`; later deltas remain copyable in memory but do not enqueue body checkpoints. A user-initiated favorite can explicitly persist a completed in-memory result under the current generation.
+- Favorites are restored into the Host's in-memory index at startup. The history UI supports annotation updates and unfavorite; clear/delete keep their reference rules transactionally consistent.
+- Added SQLite Online Backup API support, executed on the storage worker so the backup includes WAL state consistently. Valid config saves keep one bounded `backups/settings.previous.toml`; corrupt/newer TOML remains untouched, and Control Center can explicitly reload a valid external edit.
+- Expanded Provider settings with context budget, explicit proxy, connect/total/stream-event timeouts, temperature, and max output tokens. Values are validated before save; request timeout and protocol fields are applied to actual calls, and HTTP clients are cached/reused by proxy/connect-timeout profile. Provider registry refresh now follows every settings apply/reload.
+- Added generic per-action parameter defaults sourced from declarative manifests. The Control Center exposes Translate's text target-language value and Polish's declared enum choices without editing or hard-coding Prompt content; caller-supplied invocation parameters still take precedence.
+- Reworked Control Center with locked Longbridge GPUI Kit components into real Settings, History & favorites, and Privacy & diagnostics views. History uses Kit `v_virtual_list`, `Input`, `Radio`, `Switch`, `Button`, selectable text, and clipboard support. Destructive operations require a second explicit click. Privacy exposes recording, config reload, consistent backup, paths, Credential Manager migration caveat, and a redacted diagnostic report that omits credentials and content bodies.
+- The plugin-management page remains Stage 6 by specification and was not added as a clickable no-op.
+
+### Commands and automated evidence
+
+The final native Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **42 passed, 0 failed, 1 native fixture ignored by default**; the separately invoked real-hotkey replacement fixture passed.
+- New storage tests cover 10,005-row stable cursor pagination, per-execution delete barriers, clear-generation rejection, favorite-preserving clear, previous-valid-config backup, and forward-schema refusal.
+- New execution tests prove recording-off prevents further running body checkpoint enqueue while keeping the in-memory result, and that explicit favorite preservation can save a completed unrecorded result.
+
+### Staged Release smoke and artifacts
+
+Launched `C:\123\CODE\LexWisp\dist\stage-05\LexWisp.exe` from the actual staged directory. First launch exposed a responsive `LexWisp · Settings` window. A second process exited 0 within five seconds and woke `LexWisp · Quick Shell` in the original process. The staged portable database reported schema version 4, retention generation 0, and the expected tables: `action_executions`, `conversation_deletions`, `conversations`, `execution_deletions`, `executions`, `favorites`, `messages`, `retention_state`, and `schema_version`. Cleanup used `Stop-Process`, so this run is not claimed as a fresh explicit-quit UI test.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500; 34,132,275,200 bytes RAM; prior 96-DPI baseline |
+| Quick Shell point sample | Working set 71,000,064 bytes; Private Bytes 103,542,784; 583 handles; 52 threads; responsive |
+| Release executable | 33,352,192 bytes; SHA-256 `096dd4ac70c7580284463bf3668898ed1b6e75b9a24fd0226bd112ec134e96f0` |
+| Release ZIP | 12,852,444 bytes; SHA-256 `9a4fb29a7247365de8724a547a78808b393e9b4fc7fbf4d066fc4eef7de97a0b` |
+
+Runnable directory: `dist/stage-05/`. Archive: `dist/LexWisp-stage-05-windows-x64.zip`, with adjacent checksum. Its explicit allowlist contains only `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`; generated settings/database/logs/caches/credentials are not archived.
+
+### Pending native acceptance and exact Computer Use blocker
+
+The `computer-use` skill, guidance, API reference, and confirmations were read before automation. Following the user-provided workaround, the session imported `@oai/sky` directly and called `sky.list_apps()` without calling `cua.getState()`. The import succeeded, but the initial call, one delayed lightweight retry, and one reset/reinitialize retry all returned exactly `Trusted RPC service is not configured: sky`. Per the skill's bounded recovery guidance, no further repeated inventory calls were made.
+
+Consequently, button-level Control Center navigation, search/copy/confirmation UI, Chinese IME interaction, and a real Provider's concurrent streaming/retry remain pending. The direct error indicates missing trusted-RPC host configuration rather than a LexWisp failure. Windows 10, alternate DPI/multi-monitor layouts, clean-machine portability, prolonged resource/GPU measurements, disk-full UI observation, and Credential Manager migration to a second machine remain later/manual gates; the README and diagnostics page explicitly state that keys do not migrate with portable data.
