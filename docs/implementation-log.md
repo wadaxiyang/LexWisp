@@ -6,8 +6,8 @@ Status: **implemented; Windows Release build, launch, and Stage 0 native interac
 
 ### Scope
 
-- Read both repository specifications in full; the extension's `LexWisp_IMPLEMENTATION_SPEC.md` references resolve to the actual `LexWisp_SPEC.md`.
-- Rewrote `AGENTS.md` in concise English, retaining product constraints, dependency direction, ownership, security, staged implementation, and evidence requirements. The specifications remain unchanged.
+- Read the two original repository design documents in full before implementation.
+- Rewrote `AGENTS.md` in concise English, retaining product constraints, dependency direction, ownership, security, staged implementation, and evidence requirements. Those design documents were retired after the implementation pass completed.
 - Created only `lexwisp-app` and `lexwisp-ui`. No empty Host/core/plugin crates, registry, service container, event bus, Provider, or ChatController.
 - Added the real `LexWisp` binary, one Kit initialization, explicit quit mode, retained application close subscription, and visible startup error reporting. Last-window close exits at Stage 0 because no tray/hotkey recovery exists yet. Startup open failure returns a nonzero exit code.
 - `surface.rs` centralizes `build_window_options`, `open_surface_window`, and `LexWispWindowRoot`. Each window has exactly one Kit Root; dialog/sheet/notification layers share one composition. The helper contains no plugin business branches.
@@ -111,7 +111,7 @@ Memory was sampled with `Get-Process` while the window was visible, with no netw
 
 - Confirmed the installed `gpui-kit` and `gpui-kit-design-guides` skills are available. Read their complete required design/coding guides, component conventions, application recipe, and the locked 0.6.1 source/tests relevant to Input, Textarea, Root overlays, and window creation.
 - Added an explicit `AGENTS.md` rule that all LexWisp UI work must use those two Longbridge GPUI Kit skills and the locked workspace APIs; agents must stop UI changes if the skills are unavailable rather than substitute another framework.
-- Re-read `LexWisp_SPEC.md` and `LexWisp_SPEC_EXTEND.md` in full and audited every Stage 0 task against source, dependencies, artifacts, and the evidence above. Stage 0 remains deliberately limited to `lexwisp-app` and `lexwisp-ui`; no Stage 1 scaffolding was added.
+- Re-read both original design documents in full and audited every Stage 0 task against source, dependencies, artifacts, and the evidence above. Stage 0 remains deliberately limited to `lexwisp-app` and `lexwisp-ui`; no Stage 1 scaffolding was added.
 - Replaced the probe's fixed-pixel content heights with GPUI rem-scale helpers (`h_32` and `h_40`) and corrected the dialog-opening command label to `关于验证…`. The remaining direct `px` values are confined to `WindowOptions`, where GPUI requires resolved platform window geometry, and that exception is documented at the owner.
 - Re-ran successfully: `cargo fmt --all -- --check`, workspace check, workspace/all-target Clippy with warnings denied, workspace tests, Release build, and `scripts/package.ps1 -SkipBuild`. QuickJS again passed 2/2 tests; the loop interrupted after 50.0685 ms.
 - The rebuilt staged executable is 22,809,600 bytes and the ZIP is 8,477,326 bytes. The artifact hashes above now describe this rebuilt output.
@@ -246,17 +246,17 @@ Pending Stage 2 acceptance: configure a user-authorized real compatible endpoint
 
 ## Stage 3 — 2026-09-19
 
-Status: **implemented and packaged; locked build/test/static quality gates, the native hotkey fixture, staged Release launch, single-instance wake, and schema-2 creation passed. Native selection/replace interaction against Notepad and a browser/editor, IME/menu dismissal interaction, and a live-provider Translate/Polish result remain pending because the Windows Computer Use surface returned no applications and no user-authorized compatible provider was available.** Those missing manual gates are not represented as complete.
+Status: **implemented and packaged; locked build/test/static quality gates, the native hotkey fixture, staged Release launch, single-instance wake, and schema-2 creation passed. Native selection/replace interaction against Notepad and a browser/editor, IME/menu dismissal interaction, and a live-provider text-action result remain pending because the Windows Computer Use surface returned no applications and no user-authorized compatible provider was available.** Those missing manual gates are not represented as complete.
 
 ### Delivered daily-use path
 
-- Added `LaunchMode` with the exact `action_palette`, `translate_selection`, and `default_action` settings. The pure route test covers every mode with and without a verified selection. Invalid or absent automatic actions fall back to the action entry with a visible reason; no-input routes to manual Quick Ask and never starts a model request.
+- Added generic action-palette and configured-default-action routing. The pure route test covers every current mode with and without a verified selection. Invalid or absent automatic actions fall back to the action entry with a visible reason; no-input routes to manual Quick Ask and never starts a model request.
 - Added a dedicated `lexwisp-uia-mta` COM MTA worker. The Windows shell captures the foreground HWND/process/title before the GPUI window is shown, asks UI Automation for the focused text selection, rejects password controls, and returns only an authorized DTO plus an opaque 60-second replacement token. COM elements never leave their owning thread.
 - Added a bounded 800-ms capture wait. A blocked cross-process UIA item pauses later automatic capture rather than spawning replacement workers. Ordinary clipboard read/write stays available independently if UIA is blocked.
 - Added restricted Ctrl+C fallback. It first snapshots every clipboard format that can be safely copied as movable global memory, refuses known handle-based formats, waits for shortcut modifiers to release, rechecks the foreground target, detects a new clipboard sequence, reads only new Unicode text, and restores the prior formats only if no competing writer changed the clipboard. Because the sequence cannot prove source selection, fallback text is always a candidate requiring a user click.
 - Added manual replacement behind an explicit result button. The platform worker rechecks token age, HWND existence, process identity, the retained UIA element, and the exact still-selected text before activating the original window and issuing paste. It never uses `ValuePattern.SetValue`, never substitutes the whole field, never elevates, invalidates a successful token, and copies the result instead when validation fails. Successful replacement intentionally leaves the result on the clipboard.
-- Added generic manifest parsing and Prompt execution for the compiled Translate and Polish packages. Their IDs, names, allowed sources, parameters, Fast profile, cancel default, and output actions come from `manifest.toml`; prompt files use only declared `{{params.*}}` replacement. The actual input remains a separate user message. Unknown variables, parameters, kinds, sources, or required values fail before the request.
-- Translate and Polish use the same scoped `TextRunPort`, `InvocationSupervisor`, `AiService`, `ExecutionStore`, checkpoint projector, Provider resolution, cancellation, and bounded streaming path as Chat. Host contains no Translate/Polish ID branches and no second HTTP/SSE/persistence implementation.
+- Added generic manifest parsing and Prompt execution for declarative packages. IDs, names, allowed sources, parameters, model profiles, dismiss defaults, and output actions come from `manifest.toml`; prompt files use only declared `{{params.*}}` replacement. The actual input remains a separate user message. Unknown variables, parameters, kinds, sources, or required values fail before the request.
+- Declarative actions use the same scoped `TextRunPort`, `InvocationSupervisor`, `AiService`, `ExecutionStore`, checkpoint projector, Provider resolution, cancellation, and bounded streaming path as Chat. Host contains no product-action ID branches and no second HTTP/SSE/persistence implementation.
 - Replaced the Chat-only popup composition with one GPUI Kit Quick Shell containing the action palette, verified/candidate/explicit-clipboard source preview, manifest-driven text/enum/boolean/number parameter controls, manual composer, selectable streaming result, Stop, Copy, Favorite, and safe Replace. Stateful Kit inputs and subscriptions are created once; side effects start from intent callbacks rather than render.
 - Added explicit clipboard input only for actions whose manifest allows it. Failed selection never reads or uploads the previous clipboard implicitly.
 - Added generic per-action `cancel`/`continue` overrides to versioned TOML and Control Center. Chat still continues when hidden. Declarative controllers cancel on the actual Surface detach by default; menu/dialog/IME focus changes do not call the hide path.
@@ -277,7 +277,7 @@ cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-w
 ```
 
 - Normal suite: **29 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real-hotkey fixture passed.
-- New coverage proves all six launch-mode/input-presence route combinations, strict manifest decoding, known-variable-only prompt expansion, direct non-Chat execution persistence, favorite persistence, settings round-trip for launch/default/dismiss values, sequence protection, and rejection of a schema-99 database without creating Stage 3 tables.
+- New coverage proves every current launch-mode/input-presence route combination, strict manifest decoding, known-variable-only prompt expansion, direct non-Chat execution persistence, favorite persistence, settings round-trip for launch/default/dismiss values, sequence protection, and rejection of a schema-99 database without creating Stage 3 tables.
 - Existing fragmented SSE, truncated stream/partial result, HTTP error, cancellation, Chat stable-ID, checkpoint coalescing, credential/settings, and QuickJS probes remain green.
 
 ### Staged Release smoke and artifacts
@@ -297,8 +297,8 @@ Runnable directory: `dist/stage-03/`. Archive: `dist/LexWisp-stage-03-windows-x6
 
 The `computer-use` skill was initialized twice as prescribed, including one reset/retry, but both inventories returned no native applications and a `nodeRepl.fetch request failed` error. Therefore the following specification gates remain pending and must be replayed on an interactive desktop with working native control and a user-authorized Provider:
 
-- select text in Notepad and one common browser/editor, exercise all three launch modes with and without selection, confirm candidate fallback, and record unsupported targets;
-- run real Translate and Polish streams, Stop with a partial result, Copy, Favorite, hide-to-cancel and the configured continue override;
+- select text in Notepad and one common browser/editor, exercise both launch modes with and without selection, confirm candidate fallback, and record unsupported targets;
+- run a real installed-plugin stream, Stop with a partial result, Copy, Favorite, hide-to-cancel and the configured continue override;
 - open Kit menus/dialogs and a Chinese IME candidate window during generation and prove none is treated as Surface dismissal;
 - replace a still-valid Notepad selection, then switch/change/expire the original target and prove LexWisp copies without writing to the wrong application;
 - verify target applications at different integrity levels, complex multi-format clipboard contents, Windows 10, alternative IMEs, multi-monitor/DPI coordinates, resource trends, GPU memory, and clean-machine portability at their later acceptance gates.
@@ -374,7 +374,7 @@ Status: **implemented and packaged; locked formatting/check/Clippy/test gates, t
 - Favorites are restored into the Host's in-memory index at startup. The history UI supports annotation updates and unfavorite; clear/delete keep their reference rules transactionally consistent.
 - Added SQLite Online Backup API support, executed on the storage worker so the backup includes WAL state consistently. Valid config saves keep one bounded `backups/settings.previous.toml`; corrupt/newer TOML remains untouched, and Control Center can explicitly reload a valid external edit.
 - Expanded Provider settings with context budget, explicit proxy, connect/total/stream-event timeouts, temperature, and max output tokens. Values are validated before save; request timeout and protocol fields are applied to actual calls, and HTTP clients are cached/reused by proxy/connect-timeout profile. Provider registry refresh now follows every settings apply/reload.
-- Added generic per-action parameter defaults sourced from declarative manifests. The Control Center exposes Translate's text target-language value and Polish's declared enum choices without editing or hard-coding Prompt content; caller-supplied invocation parameters still take precedence.
+- Added generic per-action parameter defaults sourced from declarative manifests. The Control Center renders declared text and enum choices without editing or hard-coding Prompt content; caller-supplied invocation parameters still take precedence.
 - Reworked Control Center with locked Longbridge GPUI Kit components into real Settings, History & favorites, and Privacy & diagnostics views. History uses Kit `v_virtual_list`, `Input`, `Radio`, `Switch`, `Button`, selectable text, and clipboard support. Destructive operations require a second explicit click. Privacy exposes recording, config reload, consistent backup, paths, Credential Manager migration caveat, and a redacted diagnostic report that omits credentials and content bodies.
 - The plugin-management page remains Stage 6 by specification and was not added as a clickable no-op.
 
@@ -424,12 +424,12 @@ Status: **implemented and packaged; locked formatting/check/Clippy/test gates, t
 - Added a typed plugin-management boundary in `lexwisp-core` and a Host-owned `PluginManager`. UI receives typed summaries/previews/actions rather than Host implementations. Managed packages load after compiled built-ins during startup and register through the same registry, grants, scoped ports, Invocation supervision, result storage, and Quick Shell projection.
 - Implemented directory and ZIP import into a private staging area. Import is preview-only until the user confirms; previews are single-use and stale/cancelled staging is removed. Stage 6 accepts only declarative packages and rejects script payloads.
 - Enforced limits before activation: 10 MiB archive, 32 MiB expanded content, 256 entries, 256 KiB manifest, 2 MiB prompt files, and 1 MiB icon. ZIP and directory validation reject traversal, absolute/drive/UNC/ADS/backslash paths, Windows reserved names, trailing dots/spaces, case-folded collisions, links/reparse points, unsupported entries, and undeclared payloads.
-- Added strict declarative manifests with semantic versions, Host API version requirements, package/action identity, per-action prompt files, parameters, sources, outputs, and requested capabilities. Unknown fields, variables, parameter kinds, sources, actions, capabilities, or incompatible Host API requirements fail before installation. The documented `academic-polish` example is also a parser fixture.
+- Added strict declarative manifests with semantic versions, Host API version requirements, package/action identity, per-action prompt files, parameters, sources, outputs, and requested capabilities. Unknown fields, variables, parameter kinds, sources, actions, capabilities, or incompatible Host API requirements fail before installation. The documented neutral declarative example is also a parser fixture.
 - Content is SHA-256 addressed under `%data%/plugins/<id>/<version>-<hash-prefix>`. Replacing/reloading is explicit. Registry replacement is atomic; storage/grants are rolled back if activation fails. Reload validates changed content before swapping, while an invalid reload preserves the active generation.
 - Extended SQLite to schema 5 with `installed_plugins` and `plugin_grants`, including content hash, generation, status, source, and requested/granted capability state. Grants are bound to the exact plugin ID, content hash, and generation; stale scoped handles cannot retain authority after reload.
 - Disable rejects new work, advances package generation, revokes grants, cancels that plugin's active Invocations, detaches registry/UI projections, and refreshes Quick Shell. Re-enable revalidates unchanged managed content. Uninstall removes only the Host-managed copy and metadata; the original import source and history/results are outside its deletion scope.
 - Added a real GPUI Kit Plugins page. Only this page accepts external path drops. It displays status, source/managed paths, version/type, actions, capabilities, grants, content hash, validation errors, and preview changes. Install/replace/reload, enable/disable, open directory, and two-step uninstall are intent callbacks. Native acceptance exposed that one mixed file/folder picker opened in folder mode, so the final UI uses separate **Choose directory** and **Choose ZIP** buttons with mutually exclusive native picker options.
-- Added `docs/plugin-schema.md`, the packaged `academic-polish-example.zip`, and Stage 06 README/package documentation. The single package script keeps an explicit runtime allowlist and excludes settings, databases, logs, caches, credentials, and developer source.
+- Added `docs/plugin-schema.md`, a declarative parser fixture, and Stage 06 README/package documentation. The single package script keeps an explicit runtime allowlist and excludes settings, databases, logs, caches, credentials, and developer source.
 
 ### Commands and automated evidence
 
@@ -456,13 +456,13 @@ The `computer-use` skill and its required references were read before automation
 From an actual `C:\123\CODE\LexWisp\dist\stage-06\LexWisp.exe` launch, native interaction verified:
 
 - navigation to Plugins, directory selection, preview of ID/version/actions/`ai.invoke`/new permission/SHA-256, and explicit confirmation;
-- a second instance exiting 0 and waking Quick Shell, where `Academic Polish` appeared with its text and enum parameter controls;
+- a second instance exiting 0 and waking Quick Shell, where the installed declarative fixture appeared with its text and enum parameter controls;
 - disable destroying the stale Quick Shell projection, re-enable restoring the package, and the next Quick Shell reflecting it;
 - modifying the managed prompt, reloading through a same-ID/version preview with a new hash, and switching to the new managed content generation;
 - corrupting the managed manifest, observing the TOML unknown-field error, and confirming the prior enabled package/action remained active after the failed reload;
 - the final two-button build showing both directory and ZIP import entry points, with **Choose ZIP** opening the native file picker labelled `Choose plugin ZIP` rather than a folder picker.
 
-The acceptance database reported schema version 5 and persisted `org.example.academic-polish` plus its generation/hash-bound `ai.invoke` grant during the management run. The final packaging run then rebuilt a clean staging directory; no imported plugin or generated data is included in the archive.
+The acceptance database reported schema version 5 and persisted the imported fixture plus its generation/hash-bound `ai.invoke` grant during the management run. The final packaging run then rebuilt a clean staging directory; no imported plugin or generated data is included in the archive.
 
 | Item | Observed value |
 | --- | --- |
@@ -472,7 +472,7 @@ The acceptance database reported schema version 5 and persisted `org.example.aca
 | Release executable | 34,064,896 bytes; SHA-256 `46849bda75618f3977e70e790d21bcf003a44b4b963ceacd8ec721d4ed14cfd7` |
 | Release ZIP | 13,115,365 bytes; SHA-256 `47313845e7c6766d1fa5ee710418fd865d500bb9744a76c96283af7d8d72a339` |
 
-Runnable directory: `dist/stage-06/`. Archive: `dist/LexWisp-stage-06-windows-x64.zip`, with an adjacent matching checksum. Its exact entries are `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, `plugin-schema.md`, `academic-polish-example.zip`, and `THIRD-PARTY-NOTICES.txt`. The final desktop process was stopped after acceptance. Point measurements are not leak/GPU/p95 claims; no working-set trimming was used.
+Runnable directory: `dist/stage-06/`. Archive: `dist/LexWisp-stage-06-windows-x64.zip`, with an adjacent matching checksum. That historical Stage 6 artifact was superseded and later removed from `dist`; the current release package uses the explicit runtime-only allowlist. The final desktop process was stopped after acceptance. Point measurements are not leak/GPU/p95 claims; no working-set trimming was used.
 
 ### Pending acceptance
 
@@ -527,7 +527,7 @@ Launched `C:\123\CODE\LexWisp\dist\stage-07\LexWisp.exe` from the actual final s
 | Release executable | 36,282,880 bytes; SHA-256 `dd401539e21fddf6e745ae5fd48e9296c60a9856ed4f274bc123723355417dfe` |
 | Release ZIP | 14,060,822 bytes; SHA-256 `2ac1e01a47fac22228f0843b0d6609fd3c48216bcc9a1cedace3e509cee1828c` |
 
-Runnable directory: `dist/stage-07/`. Archive: `dist/LexWisp-stage-07-windows-x64.zip`. Its exact entries are `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, `plugin-schema.md`, `script-plugin-api.md`, `lexwisp-plugin.d.ts`, `academic-polish-example.zip`, `script-text-example.zip`, `script-multistep-example.zip`, and `THIRD-PARTY-NOTICES.txt`. Generated settings, databases, logs, caches, credentials, Rust/Node runtimes, and developer source are not archived. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
+Runnable directory: `dist/stage-07/`. Archive: `dist/LexWisp-stage-07-windows-x64.zip`. That historical Stage 7 artifact was superseded and later removed from `dist`; the current release package uses the explicit runtime-only allowlist. Generated settings, databases, logs, caches, credentials, Rust/Node runtimes, and developer source are not archived. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
 
 ### Pending native acceptance and exact Computer Use blocker
 
@@ -610,3 +610,64 @@ Therefore the following remain pending: exact hotkey-to-first-interactive-frame 
 - Added `.github/workflows/release.yml`. A pushed `v*` tag is validated against `lexwisp-app`, installs Rust 1.95.0, runs the locked Windows formatting/check/Clippy/test/Release gates, packages the portable archive, and creates a GitHub Release with the ZIP and checksum. The workflow has only `contents: write` permission and marks prerelease SemVer tags accordingly.
 - Local release-candidate gates passed: formatting, workspace check, Clippy with warnings denied, **60 tests**, the separately invoked native global-hotkey fixture, Release build, package creation, exact five-entry archive inspection, and checksum verification. The local candidate ZIP is 14,071,268 bytes with SHA-256 `dd5def9c889de51038ae936f2e8e63a278bf64edf1638c0ed202340b16cdab38`; the tag workflow produces and signs its own adjacent checksum because ZIP timestamps can change the archive hash.
 - Published annotated tag `v0.1.0` at commit `eac94bd2de2ed3e783c23a76e3a88a09a2ca2cb2`. GitHub Actions run `35483997143` completed every gate and published the non-draft, non-prerelease GitHub Release. The downloaded remote ZIP is 14,070,888 bytes with SHA-256 `79d8ad3cbb9d9cd3b49a103bdddfbe78a5324ca5f3624be64efcfce440e31ae6`; its adjacent checksum matched and its entries were exactly the five allowlisted files. The successful run reported only the upstream Node 20 deprecation annotation from `actions/checkout@v4`; `main` was subsequently updated to official `actions/checkout@v7` for future tags without moving the published tag.
+
+## Post-v0.1.0 scope correction — 2026-09-20
+
+- Deleted both completed design documents at the user's direction and removed their links and source-of-truth instructions. `AGENTS.md`, README, plugin documentation, and this log now describe the maintained codebase directly.
+- Removed the two bundled declarative product packages, their startup registration, their dedicated shortcut mode and setting, their UI wording, and their product-specific examples/tests. Chat is now the only bundled product plugin. Managed Declarative and Script packages still activate through the generic registry, grants, scoped execution, supervision, UI projection, and persistence framework.
+- Reduced shortcut routing to the action palette and a configured installed-plugin default action. A schema-1 compatibility reader maps the retired shortcut value to the action palette and drops its retired field; the next successful save writes only the current settings shape. This migration does not register or execute a removed action.
+- Replaced the product-oriented declarative example with the neutral `examples/plugins/declarative-fixture` parser fixture. Historical stage archives were already removed from `dist`; current packaging remains the five-file runtime allowlist.
+- Read the required Longbridge GPUI Kit skills, their complete design/coding/conventions references, `Cargo.lock`, workspace dependency pins, and the locked `gpui-kit` 0.6.1 source/tests before changing the visible launch-mode list and composer placeholder.
+- Passed `cargo fmt --all -- --check`, locked workspace check, workspace/all-target Clippy with warnings denied, and locked workspace tests: **61 passed, 0 failed, 1 real-global-hotkey fixture ignored by default**. The locked Windows Release build and `scripts/package.ps1 -SkipBuild` also passed.
+- Release executable: `target/x86_64-pc-windows-msvc/release/LexWisp.exe`, 36,207,104 bytes. Local archive: `dist/LexWisp-v0.1.0-windows-x64.zip`, 14,045,512 bytes. These are local verification artifacts only; no tag or remote release was changed.
+- Launched the executable from the actual `target/package/LexWisp-v0.1.0-windows-x64` staging directory. It created a responsive `LexWisp · Settings` native window with a nonzero handle; the exact smoke-test process was then stopped, and a final packaging pass rebuilt clean staging without generated data.
+- The required Computer Use skill and references were read. Direct `@oai/sky` initialization succeeded, but `sky.list_apps()` returned exactly `Trusted RPC service is not configured: sky`; the control plane was not retried. The native process/window smoke above is therefore compile/launch evidence, not button-level UI acceptance.
+
+## BUGFIX SPEC 1.0 — 2026-09-20
+
+Status: **implemented; locked formatting/check/Clippy/test/Release-build gates passed, the native hotkey replacement fixture passed, and the clean packaged Release completed a process-level staged smoke test. Physical hotkey-to-first-frame timing and selection capture against external applications remain pending native acceptance.**
+
+### Correctness and lifecycle fixes
+
+- Declarative and Script text-action subscribers now use bounded latest-snapshot delivery. A full subscriber queue evicts one stale snapshot before retrying the newest state, terminal `Completed`/`Failed`/`Cancelled` snapshots are retained, closed consumers are removed, and restoring a hidden surface uses the same delivery helper.
+- `ExecutionStore` now distinguishes active executions from a bounded cache of at most 128 completed terminal executions, with a one-hour opportunistic TTL. Entries receive `finished_at` only after terminal persistence resolves; pruning runs on start, terminal commit, and favorite preservation, never removes active or persistence-in-flight entries, and emits no synthetic observer update.
+- `ContentStore::contains_execution` checks both chat `executions` and standalone `action_executions`. Favorite preservation returns immediately for saved in-memory entries, falls back to SQLite after eviction, and reports `result is no longer retained and was not persisted` for an evicted unrecorded result.
+- New executions begin as `Queued`. Provider executions transition to `Running` only after acquiring the global semaphore; Script executions explicitly transition immediately before QuickJS work begins. The transition increments sequence and notifies the existing observer without adding a checkpoint write.
+- The Windows hotkey callback now captures only a lightweight foreground seed before activation, emits the surface intent immediately, and queues UI Automation work on the existing MTA worker. Captures are coalesced through one pending slot, carry a launch generation, and cannot overwrite a newer launch.
+- Hotkey, single-instance wake, tray Quick Shell, and tray Chat intents use a dedicated capacity-one latest-intent port. Full queues retain the newest user-visible intent without blocking the Win32 message thread. Surface launch contexts use the same bounded stale-eviction rule.
+- `SurfaceController` owns a generation-aware single-slot inbox. It rejects old capture results and safely handles the valid race where a fast capture result reaches GPUI before its corresponding Toggle intent. No visual hierarchy, focus path, component family, or keyboard behavior was changed.
+
+### Commands and automated evidence
+
+The final native Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Workspace suite: **73 passed, 0 failed, 1 native fixture ignored by default**. The ignored real global-hotkey replacement fixture passed when invoked separately.
+- Added regressions cover capacity-one terminal delivery for all terminal states, closed-subscriber cleanup, surface re-show delivery, 500 completed executions with bounded retention, active-entry preservation, persisted and unrecorded favorite fallback, `Queued` to `Running`, latest surface intent, capture-before-intent ordering, and stale generation rejection.
+- The staged executable `target/package/LexWisp-v0.1.0-windows-x64/LexWisp.exe` remained responsive after launch. A second staged process exited 0 within five seconds, preserving single-instance wake. The smoke process was stopped afterward, and the project packaging script rebuilt the staging directory so generated portable settings/database files were removed.
+
+### Environment and artifacts
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500, 20 logical processors; 34,132,275,200 bytes visible RAM; AppliedDPI 96 |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Hidden staged smoke point sample | Working set 64,589,824 bytes; Private Bytes 95,784,960; 511 handles; 41 threads; responsive |
+| Release executable | 36,292,608 bytes |
+| Release ZIP | 14,077,944 bytes; SHA-256 `050bc0a00821203407ad41f2a1a97fe1ade3bc99bc46c5a32fc5caa2c9cb134e` |
+
+Runnable directory: `target/package/LexWisp-v0.1.0-windows-x64/`. Archive: `dist/LexWisp-v0.1.0-windows-x64.zip`, with adjacent checksum. The archive and final staging directory contain only the explicit runtime allowlist; the smoke-generated `data` directory was removed by rebuilding the bounded stage.
+
+### Pending native acceptance
+
+- A physical global-hotkey run with foreground text selection is still required to measure hotkey-to-first-interactive-frame latency and verify UIA/clipboard behavior against real target applications. The process-level smoke and generation/order tests do not substitute for that gate.
+- Alternate IMEs, DPI values, multi-monitor layouts, higher/lower-integrity targets, complex clipboard formats, Explorer restart, Windows 10, clean-machine portability, and prolonged resource/GPU measurements remain pending. No Provider request or paid network call was made.

@@ -13,7 +13,7 @@ plugin-root/
 
 `schema_version` is `1`, `plugin.kind` is `declarative`, `plugin.version` is SemVer, and `plugin.host_api` must include Host API `1.0`. Stage 6 declarative packages require only `ai.invoke`; script packages and `main.js` are introduced separately in Stage 7.
 
-The executable example is in `examples/plugins/academic-polish`. Its manifest is compiled into a parser fixture, so documentation drift fails the test suite.
+The parser fixture is in `examples/plugins/declarative-fixture`. It exists to exercise the generic package format and is compiled into the test suite so documentation drift fails the build.
 
 ## Manifest fields
 

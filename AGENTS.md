@@ -2,17 +2,15 @@
 
 ## Scope and source of truth
 
-Read `LexWisp_SPEC.md` and `LexWisp_SPEC_EXTEND.md` before changing the relevant stage. The extension refers to `LexWisp_IMPLEMENTATION_SPEC.md`; in this repository that means `LexWisp_SPEC.md`. Precedence: explicit user decisions, base SPEC, extension, local implementation choices. Keep stage evidence in `docs/implementation-log.md`.
-
 Build only the requested stage and real dependencies. Do not generate future crates, empty services, placeholder actions, or clickable no-op UI. Stage 0 is a native dependency/input probe, not an AI product. Preserve existing working behavior and user changes.
 
 ## Product boundaries
 
 - Windows x64 portable native app: Rust + GPUI + GPUI-Kit + windows-rs; one normal `LexWisp.exe` process, Host + plugins.
 - No Electron, Tauri, WebView UI, GUI sidecar, per-plugin process, online marketplace, or extra Provider protocols without a new requirement.
-- Chat is a trusted, compiled Native plugin. Translate, Polish, and custom prompts are Declarative plugins; third-party multi-step logic uses Script plugins. All share registration, authorization, Invocation supervision, and results.
-- Support all three configurable shortcut modes. No selection means manual input, never silent clipboard upload.
-- Chat continues when dismissed; Translate/Polish cancel by default, with user overrides. Popup-to-panel handoff attaches the destination before detaching the source and preserves the same conversation/request.
+- Chat is the only bundled product plugin and remains a trusted, compiled Native plugin. Additional text behavior is installed later as Declarative or Script plugins. All plugin kinds share registration, authorization, Invocation supervision, and results.
+- Support the action-palette and configured-default-action shortcut modes. No selection means manual input, never silent clipboard upload.
+- Chat continues when dismissed. Imported actions follow their manifest default with user overrides. Popup-to-panel handoff attaches the destination before detaching the source and preserves the same conversation/request.
 - Save submitted inputs, results, and partial results locally by default; support opt-out and deletion. Replacing source text always requires a user click and fresh target validation.
 - Daily settings need UI; plugin authors edit manifest/prompt/JS files. Distribution must eventually run without Rust, Node, or developer tools.
 

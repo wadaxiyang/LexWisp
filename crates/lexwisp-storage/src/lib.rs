@@ -79,8 +79,8 @@ impl ConfigStore {
             }
             Err(error) => return Err(SettingsError::Load(error.to_string())),
         };
-        let settings: AppSettings =
-            toml::from_str(&source).map_err(|error| SettingsError::Load(error.to_string()))?;
+        let settings =
+            parse_settings(&source).map_err(|error| SettingsError::Load(error.to_string()))?;
         settings.validate()?;
         Ok(LoadedSettings {
             settings,
@@ -93,8 +93,7 @@ impl ConfigStore {
         let source = toml::to_string_pretty(settings)
             .map_err(|error| SettingsError::Save(error.to_string()))?;
         if let Ok(previous) = fs::read_to_string(&self.path)
-            && toml::from_str::<AppSettings>(&previous)
-                .is_ok_and(|settings| settings.validate().is_ok())
+            && parse_settings(&previous).is_ok_and(|settings| settings.validate().is_ok())
         {
             let backup = self
                 .data_directory()
@@ -108,6 +107,25 @@ impl ConfigStore {
             .write_atomic(&self.path, source.as_bytes())
             .map_err(|error| SettingsError::Save(error.to_string()))
     }
+}
+
+fn parse_settings(source: &str) -> Result<AppSettings, toml::de::Error> {
+    let mut value: toml::Value = toml::from_str(source)?;
+    if let Some(table) = value.as_table_mut()
+        && table
+            .get("schema_version")
+            .and_then(toml::Value::as_integer)
+            == Some(1)
+    {
+        table.remove("translation_action_id");
+        if table.get("launch_mode").and_then(toml::Value::as_str) == Some("translate_selection") {
+            table.insert(
+                "launch_mode".into(),
+                toml::Value::String("action_palette".into()),
+            );
+        }
+    }
+    value.try_into()
 }
 
 #[cfg(test)]
@@ -160,11 +178,8 @@ mod tests {
             .with_launch_at_startup(true)
             .with_popup_retention_seconds(0)
             .with_launch_mode(LaunchMode::DefaultAction)
-            .with_default_action_id(Some("org.lexwisp.polish/polish".into()))
-            .with_dismiss_override(
-                "org.lexwisp.translate/translate",
-                Some(DismissPolicy::Continue),
-            );
+            .with_default_action_id(Some("org.example.tool/run".into()))
+            .with_dismiss_override("org.example.tool/run", Some(DismissPolicy::Continue));
         store.save(&expected).expect("settings should save");
 
         let loaded = store.load().expect("settings should load");
@@ -203,6 +218,38 @@ mod tests {
         let loaded = store.load().expect("missing settings should use defaults");
         assert!(loaded.first_run());
         assert_eq!(loaded.settings(), &AppSettings::default());
+    }
+
+    #[test]
+    fn retired_shortcut_settings_migrate_to_the_action_palette() {
+        let path = isolated_path();
+        fs::create_dir_all(path.parent().expect("settings have a parent"))
+            .expect("test directory should be created");
+        fs::write(
+            &path,
+            r#"schema_version = 1
+hotkey = "control-alt-space"
+theme = "system"
+launch_at_startup = false
+popup_retention_seconds = 30
+launch_mode = "translate_selection"
+translation_action_id = "org.example.retired/run"
+"#,
+        )
+        .expect("legacy fixture should be written");
+        let store = ConfigStore::at(path.clone(), Arc::new(TestWriter));
+
+        let loaded = store.load().expect("legacy settings should migrate");
+        assert_eq!(loaded.settings().launch_mode(), LaunchMode::ActionPalette);
+        store
+            .save(loaded.settings())
+            .expect("migrated settings should save");
+        let saved = fs::read_to_string(&path).expect("saved settings should be readable");
+        assert!(!saved.contains("translate_selection"));
+        assert!(!saved.contains("translation_action_id"));
+
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
     }
 
     #[test]

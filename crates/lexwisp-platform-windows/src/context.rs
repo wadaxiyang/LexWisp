@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     mem, ptr,
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -12,9 +12,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use async_channel::Sender as AsyncSender;
 use lexwisp_core::{
     CaptureStatus, ContextError, ContextFuture, ContextSnapshot, ContextToken, ContextUiPort,
-    ReplaceOutcome,
+    HostUiCommand, ReplaceOutcome,
 };
 use windows::Win32::{
     System::Com::{
@@ -59,10 +60,15 @@ const CF_UNICODETEXT: u32 = 13;
 const CF_ENHMETAFILE: u32 = 14;
 
 #[derive(Clone)]
-struct ForegroundTarget {
+pub(crate) struct ForegroundTarget {
     window: isize,
     process_id: u32,
     title: String,
+}
+
+pub(crate) enum PreparedCapture {
+    Target(ForegroundTarget),
+    Snapshot(ContextSnapshot),
 }
 
 struct TargetRecord {
@@ -77,6 +83,7 @@ enum WorkerCommand {
         target: ForegroundTarget,
         reply: mpsc::SyncSender<Result<ContextSnapshot, ContextError>>,
     },
+    CaptureForLaunch,
     Replace {
         token: ContextToken,
         text: String,
@@ -85,34 +92,70 @@ enum WorkerCommand {
     Shutdown,
 }
 
+struct PreparedLaunchCapture {
+    prepared: PreparedCapture,
+    launch_generation: u64,
+    ui_commands: AsyncSender<HostUiCommand>,
+}
+
 #[derive(Clone)]
 pub struct WindowsContextHandle {
     sender: mpsc::Sender<WorkerCommand>,
     latest: Arc<RwLock<ContextSnapshot>>,
     capture_paused: Arc<AtomicBool>,
+    pending_launch: Arc<Mutex<Option<PreparedLaunchCapture>>>,
 }
 
 impl WindowsContextHandle {
     pub fn capture_foreground_blocking(&self) -> ContextSnapshot {
-        if self.capture_paused.load(Ordering::Acquire) {
-            return ContextSnapshot::empty(
-                CaptureStatus::TimedOut,
-                "UI Automation capture is paused after a blocked cross-process call. Restart LexWisp to retry; manual input remains available.",
-            );
-        }
-        let target = foreground_target();
-        let snapshot = match target {
-            Some(target) => self.request_capture(target),
-            None => ContextSnapshot::empty(
-                CaptureStatus::Unsupported,
-                "Windows did not report a foreground target.",
-            ),
+        let snapshot = match self.prepare_foreground_capture() {
+            PreparedCapture::Target(target) => self.request_capture(target),
+            PreparedCapture::Snapshot(snapshot) => snapshot,
         };
         *self
             .latest
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
         snapshot
+    }
+
+    pub(crate) fn prepare_foreground_capture(&self) -> PreparedCapture {
+        if self.capture_paused.load(Ordering::Acquire) {
+            return PreparedCapture::Snapshot(ContextSnapshot::empty(
+                CaptureStatus::TimedOut,
+                "UI Automation capture is paused after a blocked cross-process call. Restart LexWisp to retry; manual input remains available.",
+            ));
+        }
+        foreground_target().map_or_else(
+            || {
+                PreparedCapture::Snapshot(ContextSnapshot::empty(
+                    CaptureStatus::Unsupported,
+                    "Windows did not report a foreground target.",
+                ))
+            },
+            PreparedCapture::Target,
+        )
+    }
+
+    pub(crate) fn capture_for_launch(
+        &self,
+        prepared: PreparedCapture,
+        launch_generation: u64,
+        ui_commands: AsyncSender<HostUiCommand>,
+    ) {
+        let should_wake = self
+            .pending_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(PreparedLaunchCapture {
+                prepared,
+                launch_generation,
+                ui_commands,
+            })
+            .is_none();
+        if should_wake {
+            let _ = self.sender.send(WorkerCommand::CaptureForLaunch);
+        }
     }
 
     fn request_capture(&self, target: ForegroundTarget) -> ContextSnapshot {
@@ -228,9 +271,18 @@ impl WindowsContextService {
     pub fn start() -> Result<Self, ContextError> {
         let (sender, receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let latest = Arc::new(RwLock::new(ContextSnapshot::empty(
+            CaptureStatus::NoSelection,
+            "Use the global shortcut after selecting text, or type below.",
+        )));
+        let worker_latest = latest.clone();
+        let pending_launch = Arc::new(Mutex::new(None));
+        let worker_pending_launch = pending_launch.clone();
         let worker = thread::Builder::new()
             .name("lexwisp-uia-mta".into())
-            .spawn(move || worker_main(receiver, ready_sender))
+            .spawn(move || {
+                worker_main(receiver, ready_sender, worker_latest, worker_pending_launch)
+            })
             .map_err(|error| ContextError::Failed(error.to_string()))?;
         ready_receiver
             .recv()
@@ -238,11 +290,9 @@ impl WindowsContextService {
         Ok(Self {
             handle: WindowsContextHandle {
                 sender,
-                latest: Arc::new(RwLock::new(ContextSnapshot::empty(
-                    CaptureStatus::NoSelection,
-                    "Use the global shortcut after selecting text, or type below.",
-                ))),
+                latest,
                 capture_paused: Arc::new(AtomicBool::new(false)),
+                pending_launch,
             },
             worker: Some(worker),
         })
@@ -263,6 +313,8 @@ impl WindowsContextService {
 fn worker_main(
     receiver: mpsc::Receiver<WorkerCommand>,
     ready: mpsc::SyncSender<Result<(), ContextError>>,
+    latest: Arc<RwLock<ContextSnapshot>>,
+    pending_launch: Arc<Mutex<Option<PreparedLaunchCapture>>>,
 ) {
     // SAFETY: COM is initialized and uninitialized on this dedicated MTA thread; every UIA
     // interface is created, retained, used, and released on this same thread.
@@ -293,6 +345,34 @@ fn worker_main(
             WorkerCommand::Capture { target, reply } => {
                 let _ = reply.send(capture(&automation, target, &mut targets));
             }
+            WorkerCommand::CaptureForLaunch => loop {
+                let prepared = pending_launch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let Some(PreparedLaunchCapture {
+                    prepared,
+                    launch_generation,
+                    ui_commands,
+                }) = prepared
+                else {
+                    break;
+                };
+                let snapshot = match prepared {
+                    PreparedCapture::Target(target) => capture(&automation, target, &mut targets)
+                        .unwrap_or_else(|error| {
+                            ContextSnapshot::empty(CaptureStatus::Unsupported, error.to_string())
+                        }),
+                    PreparedCapture::Snapshot(snapshot) => snapshot,
+                };
+                *latest
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
+                let _ = ui_commands.send_blocking(HostUiCommand::ApplyLaunchContext {
+                    launch_generation,
+                    snapshot,
+                });
+            },
             WorkerCommand::Replace { token, text, reply } => {
                 let result = replace(&automation, &mut targets, &token, &text);
                 let _ = reply.send(result);

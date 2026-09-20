@@ -220,7 +220,31 @@ struct DeclarativeState {
     storage: StorageState,
     starting: bool,
     visible: bool,
-    subscribers: Vec<Sender<TextActionSnapshot>>,
+    subscribers: Vec<TextActionSubscriber>,
+}
+
+struct TextActionSubscriber {
+    sender: Sender<TextActionSnapshot>,
+    stale_receiver: Receiver<TextActionSnapshot>,
+}
+
+impl TextActionSubscriber {
+    fn send_latest(&self, snapshot: &TextActionSnapshot) -> bool {
+        if self.sender.receiver_count() <= 1 {
+            return false;
+        }
+        match self.sender.try_send(snapshot.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Closed(_)) => false,
+            Err(TrySendError::Full(_)) => {
+                let _ = self.stale_receiver.try_recv();
+                !matches!(
+                    self.sender.try_send(snapshot.clone()),
+                    Err(TrySendError::Closed(_))
+                )
+            }
+        }
+    }
 }
 
 pub struct DeclarativeController {
@@ -295,12 +319,9 @@ impl DeclarativeController {
             return;
         }
         let snapshot = self.make_snapshot(state);
-        state.subscribers.retain(|subscriber| {
-            matches!(
-                subscriber.try_send(snapshot.clone()),
-                Ok(()) | Err(TrySendError::Full(_))
-            )
-        });
+        state
+            .subscribers
+            .retain(|subscriber| subscriber.send_latest(&snapshot));
     }
 
     async fn execute_request(
@@ -418,8 +439,12 @@ impl TextActionUiPort for DeclarativeController {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = sender.try_send(self.make_snapshot(&state));
-        state.subscribers.push(sender);
+        let subscriber = TextActionSubscriber {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        subscriber.send_latest(&self.make_snapshot(&state));
+        state.subscribers.push(subscriber);
         receiver
     }
 
@@ -432,12 +457,9 @@ impl TextActionUiPort for DeclarativeController {
             state.visible = visible;
             if visible {
                 let snapshot = self.make_snapshot(&state);
-                state.subscribers.retain(|subscriber| {
-                    matches!(
-                        subscriber.try_send(snapshot.clone()),
-                        Ok(()) | Err(TrySendError::Full(_))
-                    )
-                });
+                state
+                    .subscribers
+                    .retain(|subscriber| subscriber.send_latest(&snapshot));
             }
             (!visible && self.resolved_dismiss_policy() == DismissPolicy::Cancel)
                 .then(|| state.active_invocation.clone())
@@ -509,6 +531,38 @@ impl ExecutionObserver for DeclarativeObserver {
 mod tests {
     use super::*;
 
+    struct DummyRunner;
+
+    impl TextRunPort for DummyRunner {
+        fn run(
+            &self,
+            _: TextInvocationRequest,
+            _: Arc<dyn ExecutionObserver>,
+        ) -> lexwisp_core::TextRunFuture<'_> {
+            Box::pin(async { Err(lexwisp_core::ChatRunError::ShuttingDown) })
+        }
+
+        fn cancel(&self, _: &InvocationId) -> Result<(), lexwisp_core::ChatRunError> {
+            Ok(())
+        }
+    }
+
+    struct DummySettings;
+
+    impl SettingsUiPort for DummySettings {
+        fn snapshot(&self) -> lexwisp_core::SettingsSnapshot {
+            lexwisp_core::SettingsSnapshot::new(lexwisp_core::AppSettings::default(), 0)
+        }
+
+        fn apply(&self, _: lexwisp_core::AppSettings) -> lexwisp_core::SettingsFuture<'_> {
+            Box::pin(async { Err(lexwisp_core::SettingsError::Save("unused".into())) })
+        }
+
+        fn reload(&self) -> lexwisp_core::SettingsFuture<'_> {
+            Box::pin(async { Err(lexwisp_core::SettingsError::Load("unused".into())) })
+        }
+    }
+
     const MANIFEST: &str = r#"
 schema_version = 1
 [plugin]
@@ -545,5 +599,109 @@ allow_replace = false
             package.actions[0].kind(),
             ActionKind::Declarative(_)
         ));
+    }
+
+    fn snapshot(status: ExecutionStatus) -> TextActionSnapshot {
+        let plugin = PluginId::parse("org.lexwisp.fixture").expect("plugin ID");
+        TextActionSnapshot {
+            action: QualifiedActionId::new(plugin, ActionId::parse("run").expect("action ID")),
+            input: "input".into(),
+            output: if status.is_terminal() {
+                "terminal".into()
+            } else {
+                String::new()
+            },
+            status,
+            invocation_id: None,
+            active_invocation: None,
+            generation: 1,
+            status_text: "fixture".into(),
+            storage: StorageState::NotRecorded,
+        }
+    }
+
+    #[test]
+    fn latest_snapshot_delivery_preserves_every_terminal_kind() {
+        for terminal in [
+            ExecutionStatus::Completed,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Cancelled,
+        ] {
+            let (sender, receiver) = async_channel::bounded(1);
+            let subscriber = TextActionSubscriber {
+                sender,
+                stale_receiver: receiver.clone(),
+            };
+            assert!(subscriber.send_latest(&snapshot(ExecutionStatus::Running)));
+            assert!(subscriber.send_latest(&snapshot(ExecutionStatus::Running)));
+            assert!(subscriber.send_latest(&snapshot(terminal)));
+            assert_eq!(
+                receiver
+                    .try_recv()
+                    .expect("latest snapshot is retained")
+                    .status,
+                terminal
+            );
+        }
+    }
+
+    #[test]
+    fn closed_subscribers_are_removed_and_reshow_delivers_latest_state() {
+        let (closed_sender, closed_receiver) = async_channel::bounded(1);
+        let closed = TextActionSubscriber {
+            sender: closed_sender,
+            stale_receiver: closed_receiver.clone(),
+        };
+        drop(closed_receiver);
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let active = TextActionSubscriber {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        assert!(active.send_latest(&snapshot(ExecutionStatus::Running)));
+        let mut subscribers = vec![closed, active];
+        let latest = snapshot(ExecutionStatus::Completed);
+        subscribers.retain(|subscriber| subscriber.send_latest(&latest));
+
+        assert_eq!(subscribers.len(), 1);
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("reshow receives current state")
+                .status,
+            ExecutionStatus::Completed
+        );
+    }
+
+    #[test]
+    fn showing_the_surface_replaces_a_stale_snapshot_with_the_hidden_terminal_state() {
+        let descriptor = DeclarativePackage::parse(MANIFEST, "prompt.md", "Do it.")
+            .expect("manifest parses")
+            .actions
+            .remove(0);
+        let controller =
+            DeclarativeController::new(descriptor, Arc::new(DummyRunner), Arc::new(DummySettings))
+                .expect("controller starts");
+        let receiver = controller.subscribe(1);
+        {
+            let mut state = controller
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.status = ExecutionStatus::Running;
+            controller.publish(&mut state);
+            state.status = ExecutionStatus::Completed;
+            state.status_text = "Complete".into();
+            controller.publish(&mut state);
+        }
+        controller.set_surface_visible(true);
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("current hidden terminal state is delivered")
+                .status,
+            ExecutionStatus::Completed
+        );
     }
 }

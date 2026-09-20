@@ -22,7 +22,31 @@ struct ControllerState {
     storage: StorageState,
     starting: bool,
     visible: bool,
-    subscribers: Vec<Sender<TextActionSnapshot>>,
+    subscribers: Vec<TextActionSubscriber>,
+}
+
+struct TextActionSubscriber {
+    sender: Sender<TextActionSnapshot>,
+    stale_receiver: Receiver<TextActionSnapshot>,
+}
+
+impl TextActionSubscriber {
+    fn send_latest(&self, snapshot: &TextActionSnapshot) -> bool {
+        if self.sender.receiver_count() <= 1 {
+            return false;
+        }
+        match self.sender.try_send(snapshot.clone()) {
+            Ok(()) => true,
+            Err(TrySendError::Closed(_)) => false,
+            Err(TrySendError::Full(_)) => {
+                let _ = self.stale_receiver.try_recv();
+                !matches!(
+                    self.sender.try_send(snapshot.clone()),
+                    Err(TrySendError::Closed(_))
+                )
+            }
+        }
+    }
 }
 
 pub(crate) struct ScriptController {
@@ -94,12 +118,9 @@ impl ScriptController {
             return;
         }
         let snapshot = self.snapshot_from(state);
-        state.subscribers.retain(|subscriber| {
-            matches!(
-                subscriber.try_send(snapshot.clone()),
-                Ok(()) | Err(TrySendError::Full(_))
-            )
-        });
+        state
+            .subscribers
+            .retain(|subscriber| subscriber.send_latest(&snapshot));
     }
 
     async fn execute_request(
@@ -218,8 +239,12 @@ impl TextActionUiPort for ScriptController {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = sender.try_send(self.snapshot_from(&state));
-        state.subscribers.push(sender);
+        let subscriber = TextActionSubscriber {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        subscriber.send_latest(&self.snapshot_from(&state));
+        state.subscribers.push(subscriber);
         receiver
     }
 
@@ -232,12 +257,9 @@ impl TextActionUiPort for ScriptController {
             state.visible = visible;
             if visible {
                 let snapshot = self.snapshot_from(&state);
-                state.subscribers.retain(|subscriber| {
-                    matches!(
-                        subscriber.try_send(snapshot.clone()),
-                        Ok(()) | Err(TrySendError::Full(_))
-                    )
-                });
+                state
+                    .subscribers
+                    .retain(|subscriber| subscriber.send_latest(&snapshot));
             }
             (!visible && self.resolved_dismiss_policy() == lexwisp_core::DismissPolicy::Cancel)
                 .then(|| state.active_invocation.clone())
@@ -389,4 +411,63 @@ fn parameters_json(
         values.insert(parameter.key.clone(), value);
     }
     Ok(serde_json::Value::Object(values).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use lexwisp_core::{ActionId, PluginId, QualifiedActionId};
+
+    use super::*;
+
+    fn snapshot(status: ExecutionStatus) -> TextActionSnapshot {
+        let plugin = PluginId::parse("org.lexwisp.script-fixture").expect("plugin ID");
+        TextActionSnapshot {
+            action: QualifiedActionId::new(plugin, ActionId::parse("run").expect("action ID")),
+            input: "input".into(),
+            output: if status.is_terminal() {
+                "terminal".into()
+            } else {
+                String::new()
+            },
+            status,
+            invocation_id: None,
+            active_invocation: None,
+            generation: 1,
+            status_text: "fixture".into(),
+            storage: StorageState::NotRecorded,
+        }
+    }
+
+    #[test]
+    fn latest_snapshot_delivery_preserves_terminal_and_cleans_closed_subscribers() {
+        for terminal in [
+            ExecutionStatus::Completed,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Cancelled,
+        ] {
+            let (sender, receiver) = async_channel::bounded(1);
+            let subscriber = TextActionSubscriber {
+                sender,
+                stale_receiver: receiver.clone(),
+            };
+            assert!(subscriber.send_latest(&snapshot(ExecutionStatus::Running)));
+            assert!(subscriber.send_latest(&snapshot(ExecutionStatus::Running)));
+            assert!(subscriber.send_latest(&snapshot(terminal)));
+            assert_eq!(
+                receiver
+                    .try_recv()
+                    .expect("latest snapshot is retained")
+                    .status,
+                terminal
+            );
+        }
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let subscriber = TextActionSubscriber {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        drop(receiver);
+        assert!(!subscriber.send_latest(&snapshot(ExecutionStatus::Completed)));
+    }
 }

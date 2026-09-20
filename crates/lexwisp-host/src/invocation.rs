@@ -174,6 +174,15 @@ impl InvocationSupervisor {
                 permit.map_err(|_| ChatRunError::ShuttingDown)?
             }
         };
+        if cancellation.is_cancelled() {
+            drop(permit);
+            return self
+                .finish_cancelled(&invocation_id, "request was cancelled")
+                .await;
+        }
+        self.executions
+            .mark_running(&invocation_id)
+            .map_err(ChatRunError::Failed)?;
         let executions = self.executions.clone();
         let delta_invocation = invocation_id.clone();
         let ai_result = self
@@ -307,7 +316,7 @@ impl InvocationSupervisor {
                 },
             );
         self.executions.start(ExecutionStart {
-            invocation_id,
+            invocation_id: invocation_id.clone(),
             plugin_id: descriptor.plugin_id().clone(),
             action: descriptor.qualified_id(),
             plugin_generation: generation,
@@ -320,6 +329,7 @@ impl InvocationSupervisor {
             chat: None,
             observer,
         });
+        self.executions.mark_running(&invocation_id)?;
         Ok(cancellation)
     }
 
@@ -753,13 +763,13 @@ mod declarative_tests {
 
     fn definition() -> DeclarativeActionDefinition {
         DeclarativeActionDefinition {
-            prompt: "Translate to {{params.language}}. Input stays user content.".into(),
+            prompt: "Apply {{params.mode}}. Input stays user content.".into(),
             parameters: vec![ActionParameter {
-                key: "language".into(),
-                label: "Language".into(),
+                key: "mode".into(),
+                label: "Mode".into(),
                 kind: ParameterKind::Text,
                 required: true,
-                default_value: Some("简体中文".into()),
+                default_value: Some("standard".into()),
                 choices: Vec::new(),
             }],
             allowed_sources: vec![ActionInputSource::Manual],
@@ -776,7 +786,7 @@ mod declarative_tests {
     fn template_only_replaces_declared_parameters() {
         assert_eq!(
             render_prompt(&definition(), &BTreeMap::new()).expect("default renders"),
-            "Translate to 简体中文. Input stays user content."
+            "Apply standard. Input stays user content."
         );
         let mut unknown = BTreeMap::new();
         unknown.insert("other".into(), "value".into());

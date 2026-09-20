@@ -2,9 +2,11 @@
 
 use std::{cell::RefCell, process::ExitCode, rc::Rc, sync::Arc};
 
-use gpui_kit::{AppContext, Entity, Global, QuitMode, Subscription, Task, Window};
+use gpui_kit::{
+    AppContext, AsyncApp, Entity, Global, QuitMode, Subscription, Task, WeakEntity, Window,
+};
 use lexwisp_core::{ActionDescriptor, ActionHandler, ChatUiPort, HostUiCommand, TextActionUiPort};
-use lexwisp_host::{DeclarativeController, DeclarativePackage, Host};
+use lexwisp_host::Host;
 use lexwisp_platform_windows::{
     SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsContextService,
     WindowsShell, display_id_under_cursor, hide_native_window, show_native_window,
@@ -43,6 +45,54 @@ fn native_handle(window: &Window) -> Result<isize, String> {
     }
 }
 
+fn handle_ui_command(
+    command: HostUiCommand,
+    surfaces: &WeakEntity<SurfaceController>,
+    cx: &mut AsyncApp,
+) -> bool {
+    let result = match command {
+        HostUiCommand::ToggleQuickShell { launch_generation } => surfaces
+            .update(cx, |surfaces, cx| {
+                surfaces.toggle_quick_shell(launch_generation, cx)
+            })
+            .and_then(|result| result)
+            .map_err(|error| ("toggle Quick Shell", error)),
+        HostUiCommand::ApplyLaunchContext {
+            launch_generation,
+            snapshot,
+        } => surfaces
+            .update(cx, |surfaces, _| {
+                surfaces.apply_launch_context(launch_generation, snapshot)
+            })
+            .and_then(|result| result)
+            .map_err(|error| ("apply launch context", error)),
+        HostUiCommand::ShowQuickShell => surfaces
+            .update(cx, |surfaces, cx| surfaces.show_quick_shell(cx))
+            .and_then(|result| result)
+            .map_err(|error| ("open Quick Shell", error)),
+        HostUiCommand::ShowChatPanel => surfaces
+            .update(cx, |surfaces, cx| surfaces.handoff_to_chat_panel(cx))
+            .and_then(|result| result)
+            .map_err(|error| ("open Chat", error)),
+        HostUiCommand::ShowControlCenter => surfaces
+            .update(cx, |surfaces, cx| surfaces.show_control_center(cx))
+            .and_then(|result| result)
+            .map_err(|error| ("open Control Center", error)),
+        HostUiCommand::RefreshPlugins => {
+            let _ = surfaces.update(cx, |surfaces, cx| surfaces.refresh_plugins(cx));
+            Ok(())
+        }
+        HostUiCommand::Quit => {
+            cx.update(|cx| cx.quit());
+            return true;
+        }
+    };
+    if let Err((action, error)) = result {
+        show_startup_error(&format!("Could not {action}.\n\n{error:#}"));
+    }
+    false
+}
+
 struct RuntimeOwners {
     host: Option<Host>,
     shell: Option<WindowsShell>,
@@ -69,6 +119,7 @@ struct ApplicationLifetime {
     _window_closed: Subscription,
     _quit: Subscription,
     _command_bridge: Task<()>,
+    _surface_intent_bridge: Task<()>,
 }
 
 impl Global for ApplicationLifetime {}
@@ -98,12 +149,13 @@ fn run() -> Result<(), String> {
     let (ui_sender, ui_receiver) = async_channel::bounded(32);
     let context = WindowsContextService::start().map_err(|error| error.to_string())?;
     let context_handle = context.handle();
-    let shell = WindowsShell::start(
+    let mut shell = WindowsShell::start(
         initial_settings.hotkey(),
         ui_sender.clone(),
         context_handle.clone(),
     )
     .map_err(|error| error.to_string())?;
+    let surface_intents = shell.take_surface_intents();
     let initial_hotkey_error = shell.initial_hotkey_error().map(str::to_owned);
     let (host, handles) = Host::build(
         initial_settings,
@@ -145,45 +197,10 @@ fn run() -> Result<(), String> {
         plugin.requested_capabilities().iter().copied(),
     );
     let chat: Arc<dyn ChatUiPort> = chat_controller.clone();
-    let mut descriptors: Vec<ActionDescriptor> = vec![action.clone()];
-    let mut text_actions: Vec<Arc<dyn TextActionUiPort>> = Vec::new();
-    for package in [
-        DeclarativePackage::parse(
-            include_str!("../assets/translate/manifest.toml"),
-            "prompt.md",
-            include_str!("../assets/translate/prompt.md"),
-        )?,
-        DeclarativePackage::parse(
-            include_str!("../assets/polish/manifest.toml"),
-            "prompt.md",
-            include_str!("../assets/polish/prompt.md"),
-        )?,
-    ] {
-        let plugin_id = package.plugin.id().clone();
-        let mut registrations = Vec::new();
-        for descriptor in package.actions {
-            let controller = DeclarativeController::new(
-                descriptor.clone(),
-                handles.text_run_port(plugin_id.clone()),
-                settings.clone(),
-            )?;
-            let handler: Arc<dyn ActionHandler> = controller.clone();
-            let ui: Arc<dyn TextActionUiPort> = controller;
-            descriptors.push(descriptor.clone());
-            text_actions.push(ui);
-            registrations.push((descriptor, handler));
-        }
-        handles
-            .plugins()
-            .register_package(package.plugin.clone(), registrations)
-            .map_err(|error| error.to_string())?;
-        handles.capabilities().replace_grants(
-            plugin_id,
-            package.plugin.requested_capabilities().iter().copied(),
-        );
-    }
+    let descriptors: Vec<ActionDescriptor> = vec![action.clone()];
+    let text_actions: Vec<Arc<dyn TextActionUiPort>> = Vec::new();
     handles.activate_installed_plugins()?;
-    let (launch_sender, launch_receiver) = async_channel::bounded(8);
+    let (launch_sender, launch_receiver) = async_channel::bounded(1);
     let quick_shell_factory: QuickShellViewFactory = {
         let chat = chat.clone();
         let actions = actions.clone();
@@ -247,6 +264,7 @@ fn run() -> Result<(), String> {
                         descriptors.clone(),
                     ),
                     launch_sender.clone(),
+                    launch_receiver.clone(),
                     quick_shell_factory.clone(),
                     chat_panel_factory.clone(),
                 )
@@ -254,60 +272,16 @@ fn run() -> Result<(), String> {
             let surface_for_commands = surfaces.downgrade();
             let command_bridge = cx.spawn(async move |cx| {
                 while let Ok(command) = ui_receiver.recv().await {
-                    match command {
-                        HostUiCommand::ToggleQuickShell(snapshot) => {
-                            let result = surface_for_commands
-                                .update(cx, |surfaces, cx| {
-                                    surfaces.toggle_quick_shell(snapshot, cx)
-                                })
-                                .and_then(|result| result);
-                            if let Err(error) = result {
-                                show_startup_error(&format!(
-                                    "Could not toggle Quick Shell.\n\n{error:#}"
-                                ));
-                            }
-                        }
-                        HostUiCommand::ShowQuickShell => {
-                            let result = surface_for_commands
-                                .update(cx, |surfaces, cx| surfaces.show_quick_shell(cx))
-                                .and_then(|result| result);
-                            if let Err(error) = result {
-                                show_startup_error(&format!(
-                                    "Could not open Quick Shell.\n\n{error:#}"
-                                ));
-                            }
-                        }
-                        HostUiCommand::ShowChatPanel => {
-                            let result = surface_for_commands
-                                .update(cx, |surfaces, cx| {
-                                    surfaces.handoff_to_chat_panel(cx)
-                                })
-                                .and_then(|result| result);
-                            if let Err(error) = result {
-                                show_startup_error(&format!(
-                                    "Could not open Chat.\n\n{error:#}"
-                                ));
-                            }
-                        }
-                        HostUiCommand::ShowControlCenter => {
-                            let result = surface_for_commands
-                                .update(cx, |surfaces, cx| surfaces.show_control_center(cx))
-                                .and_then(|result| result);
-                            if let Err(error) = result {
-                                show_startup_error(&format!(
-                                    "Could not open Control Center.\n\n{error:#}"
-                                ));
-                            }
-                        }
-                        HostUiCommand::RefreshPlugins => {
-                            let _ = surface_for_commands.update(cx, |surfaces, cx| {
-                                surfaces.refresh_plugins(cx);
-                            });
-                        }
-                        HostUiCommand::Quit => {
-                            cx.update(|cx| cx.quit());
-                            break;
-                        }
+                    if handle_ui_command(command, &surface_for_commands, cx) {
+                        break;
+                    }
+                }
+            });
+            let surface_for_intents = surfaces.downgrade();
+            let surface_intent_bridge = cx.spawn(async move |cx| {
+                while let Ok(command) = surface_intents.recv().await {
+                    if handle_ui_command(command, &surface_for_intents, cx) {
+                        break;
                     }
                 }
             });
@@ -327,6 +301,7 @@ fn run() -> Result<(), String> {
                 _window_closed: window_closed,
                 _quit: quit,
                 _command_bridge: command_bridge,
+                _surface_intent_bridge: surface_intent_bridge,
             });
 
             if (first_run || initial_hotkey_error.is_some())

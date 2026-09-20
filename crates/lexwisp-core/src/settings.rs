@@ -44,21 +44,15 @@ pub enum ThemePreference {
 pub enum LaunchMode {
     #[default]
     ActionPalette,
-    TranslateSelection,
     DefaultAction,
 }
 
 impl LaunchMode {
-    pub const ALL: [Self; 3] = [
-        Self::ActionPalette,
-        Self::TranslateSelection,
-        Self::DefaultAction,
-    ];
+    pub const ALL: [Self; 2] = [Self::ActionPalette, Self::DefaultAction];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::ActionPalette => "Choose an action",
-            Self::TranslateSelection => "Translate selection",
             Self::DefaultAction => "Run default action",
         }
     }
@@ -101,8 +95,6 @@ pub struct AppSettings {
     popup_retention_seconds: u64,
     #[serde(default)]
     launch_mode: LaunchMode,
-    #[serde(default = "default_translation_action")]
-    translation_action_id: String,
     #[serde(default)]
     default_action_id: Option<String>,
     #[serde(default)]
@@ -126,7 +118,6 @@ impl Default for AppSettings {
             launch_at_startup: false,
             popup_retention_seconds: 30,
             launch_mode: LaunchMode::ActionPalette,
-            translation_action_id: default_translation_action(),
             default_action_id: None,
             dismiss_overrides: BTreeMap::new(),
             recording_enabled: true,
@@ -147,14 +138,6 @@ impl AppSettings {
                 "popup retention must be between 0 and 600 seconds".into(),
             ));
         }
-        if self.translation_action_id.trim().is_empty() {
-            return Err(SettingsError::Invalid(
-                "translation action ID cannot be empty".into(),
-            ));
-        }
-        self.translation_action_id
-            .parse::<crate::QualifiedActionId>()
-            .map_err(SettingsError::Invalid)?;
         if self
             .default_action_id
             .as_ref()
@@ -250,10 +233,6 @@ impl AppSettings {
         self.launch_mode
     }
 
-    pub fn translation_action_id(&self) -> &str {
-        &self.translation_action_id
-    }
-
     pub fn default_action_id(&self) -> Option<&str> {
         self.default_action_id.as_deref()
     }
@@ -264,9 +243,6 @@ impl AppSettings {
         }
         match self.launch_mode {
             LaunchMode::ActionPalette => LaunchRoute::ActionPalette,
-            LaunchMode::TranslateSelection => {
-                LaunchRoute::Automatic(self.translation_action_id.clone())
-            }
             LaunchMode::DefaultAction => self
                 .default_action_id
                 .clone()
@@ -370,10 +346,6 @@ impl AppSettings {
     }
 }
 
-fn default_translation_action() -> String {
-    "org.lexwisp.translate/translate".into()
-}
-
 const fn default_recording_enabled() -> bool {
     true
 }
@@ -447,19 +419,15 @@ mod tests {
         for mode in LaunchMode::ALL {
             let settings = AppSettings::default()
                 .with_launch_mode(mode)
-                .with_default_action_id(Some("org.lexwisp.polish/polish".into()));
+                .with_default_action_id(Some("org.example.tool/run".into()));
             assert_eq!(settings.launch_route(false), LaunchRoute::QuickAsk);
             match mode {
                 LaunchMode::ActionPalette => {
                     assert_eq!(settings.launch_route(true), LaunchRoute::ActionPalette)
                 }
-                LaunchMode::TranslateSelection => assert_eq!(
-                    settings.launch_route(true),
-                    LaunchRoute::Automatic("org.lexwisp.translate/translate".into())
-                ),
                 LaunchMode::DefaultAction => assert_eq!(
                     settings.launch_route(true),
-                    LaunchRoute::Automatic("org.lexwisp.polish/polish".into())
+                    LaunchRoute::Automatic("org.example.tool/run".into())
                 ),
             }
         }

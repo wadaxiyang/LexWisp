@@ -456,7 +456,7 @@ impl QuickShell {
     ) -> Self {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Ask, translate, or polish…")
+                .placeholder("Ask or enter text…")
                 .submit_on_enter(true)
         });
         let submit_subscription = cx.subscribe_in(

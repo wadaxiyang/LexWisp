@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use async_channel::Sender;
+use async_channel::{Receiver, Sender, TrySendError};
 use lexwisp_core::{GlobalHotkey, HostUiCommand};
 use thiserror::Error;
 use tokio::sync::oneshot;
@@ -84,12 +84,35 @@ enum ThreadCommand {
 
 struct ThreadState {
     ui_commands: Sender<HostUiCommand>,
+    surface_intents: LatestSurfaceIntent,
     context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
+    launch_generation: u64,
     hotkey_id: Option<i32>,
     hotkey: Option<GlobalHotkey>,
     taskbar_created: u32,
     tray: NOTIFYICONDATAW,
+}
+
+struct LatestSurfaceIntent {
+    sender: Sender<HostUiCommand>,
+    stale_receiver: Receiver<HostUiCommand>,
+}
+
+impl LatestSurfaceIntent {
+    fn send(&self, intent: HostUiCommand) -> bool {
+        if self.sender.receiver_count() <= 1 {
+            return false;
+        }
+        match self.sender.try_send(intent) {
+            Ok(()) => true,
+            Err(TrySendError::Closed(_)) => false,
+            Err(TrySendError::Full(intent)) => {
+                let _ = self.stale_receiver.try_recv();
+                !matches!(self.sender.try_send(intent), Err(TrySendError::Closed(_)))
+            }
+        }
+    }
 }
 
 struct ShellInner {
@@ -146,6 +169,7 @@ pub struct WindowsShell {
     handle: WindowsShellHandle,
     thread: Option<thread::JoinHandle<()>>,
     initial_hotkey_error: Option<String>,
+    surface_intents: Option<Receiver<HostUiCommand>>,
 }
 
 impl WindowsShell {
@@ -156,9 +180,21 @@ impl WindowsShell {
     ) -> Result<Self, PlatformError> {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (surface_sender, surface_receiver) = async_channel::bounded(1);
+        let stale_surface_receiver = surface_receiver.clone();
         let thread = thread::Builder::new()
             .name("lexwisp-windows-shell".into())
-            .spawn(move || shell_thread(hotkey, ui_commands, context, commands_rx, ready_tx))
+            .spawn(move || {
+                shell_thread(
+                    hotkey,
+                    ui_commands,
+                    surface_sender,
+                    stale_surface_receiver,
+                    context,
+                    commands_rx,
+                    ready_tx,
+                )
+            })
             .map_err(|error| PlatformError::Unavailable(error.to_string()))?;
         let ready = ready_rx.recv().map_err(|_| {
             PlatformError::Unavailable("the Windows shell exited during startup".into())
@@ -180,7 +216,14 @@ impl WindowsShell {
             handle,
             thread: Some(thread),
             initial_hotkey_error,
+            surface_intents: Some(surface_receiver),
         })
+    }
+
+    pub fn take_surface_intents(&mut self) -> Receiver<HostUiCommand> {
+        self.surface_intents
+            .take()
+            .expect("surface intent receiver can only be taken once")
     }
 
     pub fn handle(&self) -> WindowsShellHandle {
@@ -232,6 +275,8 @@ fn unsafe_post(window: isize, message: u32) -> i32 {
 fn shell_thread(
     hotkey: GlobalHotkey,
     ui_commands: Sender<HostUiCommand>,
+    surface_sender: Sender<HostUiCommand>,
+    stale_surface_receiver: Receiver<HostUiCommand>,
     context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
     ready: mpsc::SyncSender<Result<(isize, Option<String>), PlatformError>>,
@@ -315,8 +360,13 @@ fn shell_thread(
         let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
         let mut state = Box::new(ThreadState {
             ui_commands,
+            surface_intents: LatestSurfaceIntent {
+                sender: surface_sender,
+                stale_receiver: stale_surface_receiver,
+            },
             context,
             commands,
+            launch_generation: 0,
             hotkey_id: initial_hotkey_error.is_none().then_some(HOTKEY_PRIMARY),
             hotkey: initial_hotkey_error.is_none().then_some(hotkey),
             taskbar_created,
@@ -363,14 +413,21 @@ unsafe extern "system" fn window_proc(
         }
         match message {
             WM_HOTKEY => {
-                let snapshot = state.context.capture_foreground_blocking();
-                let _ = state
-                    .ui_commands
-                    .try_send(HostUiCommand::ToggleQuickShell(snapshot));
+                let prepared = state.context.prepare_foreground_capture();
+                state.launch_generation = state.launch_generation.saturating_add(1);
+                let launch_generation = state.launch_generation;
+                state
+                    .surface_intents
+                    .send(HostUiCommand::ToggleQuickShell { launch_generation });
+                state.context.capture_for_launch(
+                    prepared,
+                    launch_generation,
+                    state.ui_commands.clone(),
+                );
                 return 0;
             }
             WM_LEXWISP_WAKE => {
-                let _ = state.ui_commands.try_send(HostUiCommand::ShowQuickShell);
+                state.surface_intents.send(HostUiCommand::ShowQuickShell);
                 return 0;
             }
             WM_COMMAND_QUEUE => {
@@ -384,7 +441,7 @@ unsafe extern "system" fn window_proc(
             WM_TRAY => {
                 match lparam as u32 {
                     WM_LBUTTONUP => {
-                        let _ = state.ui_commands.try_send(HostUiCommand::ShowQuickShell);
+                        state.surface_intents.send(HostUiCommand::ShowQuickShell);
                     }
                     WM_RBUTTONUP => show_tray_menu(window, state),
                     _ => {}
@@ -494,15 +551,20 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
             ptr::null(),
         ) as usize;
         DestroyMenu(menu);
-        let command = match selected {
-            MENU_QUICK_SHELL => Some(HostUiCommand::ShowQuickShell),
-            MENU_CHAT_PANEL => Some(HostUiCommand::ShowChatPanel),
-            MENU_SETTINGS => Some(HostUiCommand::ShowControlCenter),
-            MENU_EXIT => Some(HostUiCommand::Quit),
-            _ => None,
-        };
-        if let Some(command) = command {
-            let _ = state.ui_commands.try_send(command);
+        match selected {
+            MENU_QUICK_SHELL => {
+                state.surface_intents.send(HostUiCommand::ShowQuickShell);
+            }
+            MENU_CHAT_PANEL => {
+                state.surface_intents.send(HostUiCommand::ShowChatPanel);
+            }
+            MENU_SETTINGS => {
+                let _ = state.ui_commands.try_send(HostUiCommand::ShowControlCenter);
+            }
+            MENU_EXIT => {
+                let _ = state.ui_commands.try_send(HostUiCommand::Quit);
+            }
+            _ => {}
         }
     }
 }
@@ -573,6 +635,32 @@ mod tests {
             // SAFETY: this ID was registered with a null HWND on the current test thread.
             unsafe { UnregisterHotKey(ptr::null_mut(), self.0) };
         }
+    }
+
+    #[test]
+    fn full_surface_intent_queue_keeps_the_latest_user_intent() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let intents = LatestSurfaceIntent {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        assert!(intents.send(HostUiCommand::ShowQuickShell));
+        assert!(intents.send(HostUiCommand::ShowChatPanel));
+        assert_eq!(
+            receiver.try_recv().expect("latest intent remains queued"),
+            HostUiCommand::ShowChatPanel
+        );
+    }
+
+    #[test]
+    fn surface_intent_port_detects_a_dropped_consumer() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let intents = LatestSurfaceIntent {
+            sender,
+            stale_receiver: receiver.clone(),
+        };
+        drop(receiver);
+        assert!(!intents.send(HostUiCommand::ShowQuickShell));
     }
 
     #[test]

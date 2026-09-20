@@ -7,7 +7,13 @@ pub enum SurfaceKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostUiCommand {
-    ToggleQuickShell(crate::ContextSnapshot),
+    ToggleQuickShell {
+        launch_generation: u64,
+    },
+    ApplyLaunchContext {
+        launch_generation: u64,
+        snapshot: crate::ContextSnapshot,
+    },
     ShowQuickShell,
     ShowChatPanel,
     ShowControlCenter,

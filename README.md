@@ -2,7 +2,7 @@
 
 LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current release is **v0.1.0**.
 
-Stage 8 keeps the Stage 7 plugin model and hardens long-running operation: completed task scopes are reclaimed, Script plugins share one Host-owned HTTP pool, stale window callbacks cannot affect newer windows, unexpected window closure detaches hidden projections, and new windows open in the visible work area of the display under the pointer (including negative-coordinate layouts).
+The current source tree provides the native Host, Chat plugin, declarative and Script plugin runtimes, storage, Windows integration, and management UI. Additional text behaviors are intentionally not bundled; they are installed later through the plugin framework. Long-running operation reclaims completed task scopes, shares one Host-owned HTTP pool, rejects stale window callbacks, detaches hidden projections after unexpected window closure, and opens new windows in the visible work area of the display under the pointer (including negative-coordinate layouts).
 
 ## Run
 
@@ -16,10 +16,10 @@ Extract `LexWisp-v0.1.0-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime1
 - In Quick Shell Chat, choose **Open chat…** to hand the current conversation—including an in-flight answer—to the independent panel. Closing either window does not cancel Chat; reopening it reads the current controller snapshot.
 - The Chat Panel provides virtualized conversation and message lists, New chat, rename/delete confirmation, per-conversation Fast/Smart/configured-model preference, Send/Stop/Regenerate, selectable Markdown, and copy controls for complete answers and individual fenced code blocks.
 - Context is assembled only from the current conversation and the latest completed assistant attempt for each retained round. It drops whole oldest rounds to fit the selected Provider/model's estimated client budget, reports that pruning, and rejects a current message that cannot fit rather than truncating it.
-- Select text in another application and press the shortcut. Verified UI Automation text can be routed through the action palette, directly to Translate, or to the configured default action. A copy-fallback result is shown as candidate text and is never sent until you explicitly confirm it.
-- Translate exposes its target-language parameter. Polish exposes Fluent, Concise, and Academic styles. Both stream into the shared result surface and support Stop, Copy, Favorite, and—only for a still-verifiable original selection—**Replace original**.
+- Select text in another application and press the shortcut. Verified UI Automation text can be routed through the action palette or to a configured installed-plugin action. A copy-fallback result is shown as candidate text and is never sent until you explicitly confirm it.
+- Imported text actions stream into the shared result surface. Stop is always available; Copy, Favorite, and—only for a still-verifiable original selection—**Replace original** follow each action's declared output policy.
 - **Use clipboard text** is an explicit command available only to actions that declare clipboard input. LexWisp never silently uploads the previous clipboard after selection capture fails.
-- Chat continues when Quick Shell is hidden. Translate and Polish cancel by default; Control Center can override each action to continue. Opening a menu, dialog, or IME candidate window is not treated as hiding the surface.
+- Chat continues when Quick Shell is hidden. Imported actions use their declared dismiss policy, which Control Center can override. Opening a menu, dialog, or IME candidate window is not treated as hiding the surface.
 - Manual replacement revalidates the original process, window, UIA element, selected text, and 60-second token. If validation fails, the result is copied and the original application is not modified. Successful paste replacement intentionally leaves the result on the clipboard.
 - Closing or hiding Quick Shell keeps its native window warm for the configured interval (30 seconds by default), then destroys it. Closing every GUI window does not exit the resident process.
 - A second launch wakes the existing process instead of starting another copy.
@@ -45,4 +45,4 @@ QuickJS is embedded in `LexWisp.exe`; no Node.js, npm, browser runtime, develope
 
 Pushing a `v*` tag whose version matches the workspace package version runs the Windows formatting, check, Clippy, test, Release build, and packaging gates, then publishes the ZIP and checksum as a GitHub Release. The portable ZIP contains only `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`.
 
-See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.
+See [docs/implementation-log.md](docs/implementation-log.md), [docs/plugin-schema.md](docs/plugin-schema.md), and [docs/script-plugin-api.md](docs/script-plugin-api.md) for verified implementation evidence and plugin contracts.

@@ -73,6 +73,10 @@ enum StorageCommand {
         invocation_id: String,
         reply: mpsc::Sender<Result<bool, StorageError>>,
     },
+    ContainsExecution {
+        invocation_id: String,
+        reply: mpsc::Sender<Result<bool, StorageError>>,
+    },
     FavoriteIds {
         reply: mpsc::Sender<Result<Vec<String>, StorageError>>,
     },
@@ -277,6 +281,17 @@ impl ContentStore {
         let (reply, response) = mpsc::channel();
         self.sender
             .send_blocking(StorageCommand::ContainsFavorite {
+                invocation_id: invocation_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn contains_execution(&self, invocation_id: &str) -> Result<bool, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::ContainsExecution {
                 invocation_id: invocation_id.to_owned(),
                 reply,
             })
@@ -568,6 +583,23 @@ fn worker_main(
                 reply,
             } => {
                 let _ = reply.send(contains_favorite(&connection, &invocation_id));
+            }
+            StorageCommand::ContainsExecution {
+                invocation_id,
+                reply,
+            } => {
+                let result = connection
+                    .query_row(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM executions WHERE id = ?1
+                             UNION ALL
+                             SELECT 1 FROM action_executions WHERE id = ?1
+                         )",
+                        [invocation_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(sql_error);
+                let _ = reply.send(result);
             }
             StorageCommand::FavoriteIds { reply } => {
                 let result = (|| {
@@ -1939,10 +1971,10 @@ mod tests {
     fn text_execution_and_favorite_are_persisted_without_chat_rows() {
         let path = test_path();
         let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
-        let mut text = checkpoint(2, "translated", ExecutionStatus::Completed);
+        let mut text = checkpoint(2, "processed", ExecutionStatus::Completed);
         text.snapshot.action = QualifiedActionId::new(
-            PluginId::parse("org.lexwisp.translate").expect("plugin ID"),
-            ActionId::parse("translate").expect("action ID"),
+            PluginId::parse("org.example.action").expect("plugin ID"),
+            ActionId::parse("run").expect("action ID"),
         );
         text.snapshot.plugin_id = text.snapshot.action.plugin_id().clone();
         text.snapshot.conversation_id = None;
@@ -1966,6 +1998,16 @@ mod tests {
                 .contains_favorite(invocation.as_str())
                 .expect("favorite can be read")
         );
+        assert!(
+            store
+                .contains_execution(invocation.as_str())
+                .expect("persisted action execution can be found")
+        );
+        assert!(
+            !store
+                .contains_execution(InvocationId::new().as_str())
+                .expect("unknown execution is absent")
+        );
         owner.shutdown();
 
         let connection = Connection::open(&path).expect("database opens");
@@ -1977,7 +2019,7 @@ mod tests {
             )
             .expect("action execution exists");
         assert_eq!(input, "hello");
-        assert_eq!(output, "translated");
+        assert_eq!(output, "processed");
         drop(connection);
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");
@@ -2117,7 +2159,7 @@ mod tests {
                         id, plugin_id, action_id, plugin_generation, provider_id, model_id,
                         input, output, status, sequence, retention_generation, error,
                         started_at_ms, updated_at_ms
-                     ) VALUES (?1, 'org.lexwisp.polish', 'org.lexwisp.polish/polish', 1,
+                     ) VALUES (?1, 'org.example.action', 'org.example.action/run', 1,
                                'fixture', 'fixture', ?2, ?3, 'completed', 2, 0, NULL, ?4, ?4)",
                     params![
                         id.as_str(),

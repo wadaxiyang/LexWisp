@@ -7,8 +7,9 @@ use gpui_kit::{
     WindowHandle, WindowId, WindowOptions, div, px, size,
 };
 use lexwisp_core::{
-    ActionDescriptor, ChatUiPort, ContextSnapshot, HistoryUiPort, PluginManagementUiPort,
-    ProviderUiPort, SettingsUiPort, SurfaceKind, TextActionUiPort, ThemePreference,
+    ActionDescriptor, CaptureStatus, ChatUiPort, ContextSnapshot, HistoryUiPort,
+    PluginManagementUiPort, ProviderUiPort, SettingsUiPort, SurfaceKind, TextActionUiPort,
+    ThemePreference,
 };
 
 use crate::control_center::ControlCenter;
@@ -31,6 +32,66 @@ struct WindowEntry {
     generation: u64,
     warm_token: u64,
     warm_expiry: Option<Task<()>>,
+}
+
+#[derive(Default)]
+struct LaunchContextState {
+    current_generation: u64,
+    pending: Option<(u64, ContextSnapshot)>,
+}
+
+enum BeginLaunch {
+    Stale,
+    Current(Option<ContextSnapshot>),
+}
+
+enum ReceiveLaunch {
+    Deferred,
+    Current(ContextSnapshot),
+}
+
+impl LaunchContextState {
+    fn begin(&mut self, generation: u64) -> BeginLaunch {
+        if generation < self.current_generation
+            || self
+                .pending
+                .as_ref()
+                .is_some_and(|(pending, _)| *pending > generation)
+        {
+            return BeginLaunch::Stale;
+        }
+        self.current_generation = generation;
+        let snapshot = self
+            .pending
+            .take()
+            .and_then(|(pending, snapshot)| (pending == generation).then_some(snapshot));
+        BeginLaunch::Current(snapshot)
+    }
+
+    fn receive(&mut self, generation: u64, snapshot: ContextSnapshot) -> ReceiveLaunch {
+        if generation < self.current_generation {
+            return ReceiveLaunch::Deferred;
+        }
+        if generation > self.current_generation {
+            if self
+                .pending
+                .as_ref()
+                .is_none_or(|(pending, _)| *pending <= generation)
+            {
+                self.pending = Some((generation, snapshot));
+            }
+            return ReceiveLaunch::Deferred;
+        }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| *pending > generation)
+        {
+            ReceiveLaunch::Deferred
+        } else {
+            ReceiveLaunch::Current(snapshot)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -61,6 +122,8 @@ pub struct SurfaceController {
     plugin_management: Arc<dyn PluginManagementUiPort>,
     text_actions: Vec<Arc<dyn TextActionUiPort>>,
     launches: async_channel::Sender<ContextSnapshot>,
+    stale_launches: async_channel::Receiver<ContextSnapshot>,
+    launch_contexts: LaunchContextState,
     action_descriptors: Vec<ActionDescriptor>,
     quick_shell_factory: QuickShellViewFactory,
     chat_panel_factory: ChatPanelViewFactory,
@@ -110,6 +173,7 @@ impl SurfaceController {
         platform: Rc<dyn SurfaceWindowPlatform>,
         services: SurfaceServices,
         launches: async_channel::Sender<ContextSnapshot>,
+        stale_launches: async_channel::Receiver<ContextSnapshot>,
         quick_shell_factory: QuickShellViewFactory,
         chat_panel_factory: ChatPanelViewFactory,
     ) -> Self {
@@ -122,6 +186,8 @@ impl SurfaceController {
             plugin_management: services.plugin_management,
             text_actions: services.text_actions,
             launches,
+            stale_launches,
+            launch_contexts: LaunchContextState::default(),
             action_descriptors: services.action_descriptors,
             quick_shell_factory,
             chat_panel_factory,
@@ -135,9 +201,13 @@ impl SurfaceController {
 
     pub fn toggle_quick_shell(
         &mut self,
-        snapshot: ContextSnapshot,
+        launch_generation: u64,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let pending = match self.launch_contexts.begin(launch_generation) {
+            BeginLaunch::Stale => return Ok(()),
+            BeginLaunch::Current(snapshot) => snapshot,
+        };
         if self
             .registry
             .entries
@@ -158,10 +228,49 @@ impl SurfaceController {
             }
             Ok(())
         } else {
-            self.launches
-                .try_send(snapshot)
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            self.send_latest_launch(pending.unwrap_or_else(|| {
+                ContextSnapshot::empty(
+                    CaptureStatus::NoSelection,
+                    "Checking the foreground selection…",
+                )
+            }))?;
             self.show_quick_shell(cx)
+        }
+    }
+
+    pub fn apply_launch_context(
+        &mut self,
+        launch_generation: u64,
+        snapshot: ContextSnapshot,
+    ) -> anyhow::Result<()> {
+        let ReceiveLaunch::Current(snapshot) =
+            self.launch_contexts.receive(launch_generation, snapshot)
+        else {
+            return Ok(());
+        };
+        if !self
+            .registry
+            .entries
+            .get(&SurfaceKind::QuickShell)
+            .is_some_and(|entry| entry.state == SurfaceState::Visible)
+        {
+            return Ok(());
+        }
+        self.send_latest_launch(snapshot)
+    }
+
+    fn send_latest_launch(&self, snapshot: ContextSnapshot) -> anyhow::Result<()> {
+        match self.launches.try_send(snapshot) {
+            Ok(()) => Ok(()),
+            Err(async_channel::TrySendError::Closed(_)) => {
+                Err(anyhow::anyhow!("Quick Shell launch channel is closed"))
+            }
+            Err(async_channel::TrySendError::Full(snapshot)) => {
+                let _ = self.stale_launches.try_recv();
+                self.launches
+                    .try_send(snapshot)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+            }
         }
     }
 
@@ -569,5 +678,37 @@ mod tests {
         }
         assert_eq!(registry.allocate_generation(), first_window + 1);
         assert_eq!(registry.next_warm_token, 100);
+    }
+
+    fn context(detail: &str) -> ContextSnapshot {
+        ContextSnapshot::empty(CaptureStatus::NoSelection, detail)
+    }
+
+    #[test]
+    fn launch_context_can_arrive_before_its_surface_intent() {
+        let mut state = LaunchContextState::default();
+        assert!(matches!(
+            state.receive(2, context("second")),
+            ReceiveLaunch::Deferred
+        ));
+        assert!(matches!(state.begin(1), BeginLaunch::Stale));
+        let BeginLaunch::Current(Some(snapshot)) = state.begin(2) else {
+            panic!("matching launch should receive its deferred context");
+        };
+        assert_eq!(snapshot.detail, "second");
+    }
+
+    #[test]
+    fn old_launch_context_cannot_replace_the_current_launch() {
+        let mut state = LaunchContextState::default();
+        assert!(matches!(state.begin(2), BeginLaunch::Current(None)));
+        assert!(matches!(
+            state.receive(1, context("old")),
+            ReceiveLaunch::Deferred
+        ));
+        let ReceiveLaunch::Current(snapshot) = state.receive(2, context("current")) else {
+            panic!("current launch context should be applied");
+        };
+        assert_eq!(snapshot.detail, "current");
     }
 }

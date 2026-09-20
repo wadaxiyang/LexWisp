@@ -1471,21 +1471,24 @@ mod tests {
 
     #[test]
     fn example_package_matches_the_real_parser() {
-        let manifest = include_str!("../../../examples/plugins/academic-polish/manifest.toml");
-        let prompt = include_str!("../../../examples/plugins/academic-polish/prompt.md");
+        let manifest = include_str!("../../../examples/plugins/declarative-fixture/manifest.toml");
+        let prompt = include_str!("../../../examples/plugins/declarative-fixture/prompt.md");
         let package = DeclarativePackage::parse(manifest, "prompt.md", prompt)
             .expect("documented example parses");
-        assert_eq!(package.plugin.id().as_str(), "org.example.academic-polish");
+        assert_eq!(
+            package.plugin.id().as_str(),
+            "org.example.declarative-fixture"
+        );
         assert_eq!(package.version, Version::new(1, 0, 0));
     }
 
     #[test]
     fn damaged_manifest_and_unknown_fields_are_rejected() {
         assert!(DeclarativePackage::parse("not = [toml", "prompt.md", "prompt").is_err());
-        let manifest = include_str!("../../../examples/plugins/academic-polish/manifest.toml")
+        let manifest = include_str!("../../../examples/plugins/declarative-fixture/manifest.toml")
             .replace(
-                "name = \"Academic Polish\"",
-                "name = \"Academic Polish\"\nunsafe_field = true",
+                "name = \"Declarative Fixture\"",
+                "name = \"Declarative Fixture\"\nunsafe_field = true",
             );
         assert!(DeclarativePackage::parse(&manifest, "prompt.md", "prompt").is_err());
     }
