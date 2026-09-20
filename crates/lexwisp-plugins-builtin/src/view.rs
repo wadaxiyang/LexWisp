@@ -22,7 +22,7 @@ use gpui_kit::{
     Subscription, Task, WeakEntity, Window, div, px,
 };
 use lexwisp_core::{
-    ActionDescriptor, ActionKind, ActionRequest, ActionUiPort, CaptureStatus, ChatMessageSnapshot,
+    ActionDescriptor, ActionRequest, ActionUiPort, CaptureStatus, ChatMessageSnapshot,
     ChatMessageStatus, ChatSnapshot, ChatUiPort, ContextSnapshot, ContextUiPort, FavoriteUiPort,
     InputSource, LaunchRoute, ParameterKind, QualifiedActionId, SettingsUiPort, StorageState,
     TextActionSnapshot, TextActionUiPort,
@@ -478,11 +478,11 @@ impl QuickShell {
         let mut parameter_inputs = HashMap::new();
         let mut parameter_values = BTreeMap::new();
         for descriptor in &descriptors {
-            let ActionKind::Declarative(definition) = descriptor.kind() else {
+            let Some(parameters) = descriptor.text_parameters() else {
                 continue;
             };
             let action = descriptor.qualified_id();
-            for parameter in &definition.parameters {
+            for parameter in parameters {
                 let default = parameter.default_value.clone().unwrap_or_default();
                 match parameter.kind {
                     ParameterKind::Text | ParameterKind::Number => {
@@ -654,11 +654,11 @@ impl QuickShell {
         cx: &Context<Self>,
     ) -> BTreeMap<String, String> {
         let mut values = BTreeMap::new();
-        let ActionKind::Declarative(definition) = descriptor.kind() else {
+        let Some(parameters) = descriptor.text_parameters() else {
             return values;
         };
         let action = descriptor.qualified_id();
-        for parameter in &definition.parameters {
+        for parameter in parameters {
             let key = (action.clone(), parameter.key.clone());
             let value = match parameter.kind {
                 ParameterKind::Text | ParameterKind::Number => self
@@ -682,11 +682,11 @@ impl QuickShell {
         descriptor: &ActionDescriptor,
         cx: &Context<Self>,
     ) -> Result<(), String> {
-        let ActionKind::Declarative(definition) = descriptor.kind() else {
+        let Some(parameters) = descriptor.text_parameters() else {
             return Ok(());
         };
         let values = self.parameters(descriptor, cx);
-        for parameter in &definition.parameters {
+        for parameter in parameters {
             if parameter.required
                 && values
                     .get(&parameter.key)
@@ -911,11 +911,14 @@ impl Render for QuickShell {
             .as_ref()
             .and_then(|snapshot| snapshot.invocation_id.as_ref());
         let is_favorite = invocation.is_some_and(|id| self.favorites.contains(id));
-        let allow_replace = selected_descriptor.as_ref().is_some_and(|descriptor| {
-            matches!(descriptor.kind(), ActionKind::Declarative(definition) if definition.output.allow_replace)
-        });
+        let allow_replace = selected_descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.text_output())
+            .is_some_and(|output| output.allow_replace);
         let allow_clipboard = selected_descriptor.as_ref().is_some_and(|descriptor| {
-            matches!(descriptor.kind(), ActionKind::Declarative(definition) if definition.allowed_sources.contains(&lexwisp_core::ActionInputSource::Clipboard))
+            descriptor.text_sources().is_some_and(|sources| {
+                sources.contains(&lexwisp_core::ActionInputSource::Clipboard)
+            })
         });
 
         div()
@@ -1028,11 +1031,11 @@ impl Render for QuickShell {
                 )
             })
             .when_some(selected_descriptor.clone(), |this, descriptor| {
-                let ActionKind::Declarative(definition) = descriptor.kind() else {
+                let Some(parameters) = descriptor.text_parameters() else {
                     return this;
                 };
                 let action = descriptor.qualified_id();
-                this.children(definition.parameters.iter().map(|parameter| {
+                this.children(parameters.iter().map(|parameter| {
                     let key = (action.clone(), parameter.key.clone());
                     let label = div().text_sm().child(parameter.label.clone());
                     match parameter.kind {

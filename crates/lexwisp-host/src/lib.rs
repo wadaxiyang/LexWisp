@@ -7,6 +7,7 @@ mod invocation;
 mod plugin_manager;
 mod providers;
 mod registry;
+mod script;
 mod settings;
 mod tasks;
 
@@ -15,8 +16,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use async_channel::Sender;
 use lexwisp_core::{
     ActionUiPort, AppSettings, ChatHistoryPort, ChatRunPort, ContextUiPort, FavoriteUiPort,
-    HistoryUiPort, HostUiCommand, PluginId, PluginManagementUiPort, ProviderUiPort, SettingsUiPort,
-    TaskOwner, TextRunPort,
+    HistoryUiPort, HostUiCommand, PluginId, PluginManagementUiPort, ProviderUiPort,
+    ScriptPackageFactory, SettingsUiPort, TaskOwner, TextRunPort,
 };
 use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
@@ -158,6 +159,7 @@ pub struct Host {
     tasks: HostTaskPort,
     supervisor: Arc<InvocationSupervisor>,
     content: ContentStoreOwner,
+    script_factory: Arc<dyn ScriptPackageFactory>,
 }
 
 impl Host {
@@ -168,6 +170,7 @@ impl Host {
         context: WindowsContextHandle,
         ui_commands: Sender<HostUiCommand>,
         executable: PathBuf,
+        script_factory: Arc<dyn ScriptPackageFactory>,
     ) -> Result<(Self, HostHandles), String> {
         let data_directory = config.data_directory().to_path_buf();
         let database_path = data_directory.join("lexwisp.db");
@@ -240,6 +243,7 @@ impl Host {
             tasks.clone(),
             settings.clone(),
             ui_commands.clone(),
+            script_factory.clone(),
         )?;
         let handles = HostHandles {
             plugins,
@@ -266,6 +270,7 @@ impl Host {
                 tasks,
                 supervisor,
                 content: content_owner,
+                script_factory,
             },
             handles,
         ))
@@ -276,6 +281,7 @@ impl Host {
         self.runtime
             .block_on(self.supervisor.wait_until_idle(Duration::from_secs(2)));
         self.tasks.cancel_all();
+        self.script_factory.shutdown();
         self.runtime.shutdown_timeout(Duration::from_secs(3));
         self.content.shutdown();
     }

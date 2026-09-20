@@ -376,6 +376,17 @@ impl CapabilityAuthority {
             })
     }
 
+    pub fn is_binding_valid(&self, plugin: &PluginId, package_hash: &str, generation: u64) -> bool {
+        self.grants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(plugin)
+            .is_some_and(|grant| {
+                grant.package_hash.as_deref() == Some(package_hash)
+                    && grant.generation == Some(generation)
+            })
+    }
+
     pub fn revoke(&self, plugin: &PluginId) {
         self.grants
             .write()

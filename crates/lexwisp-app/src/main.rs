@@ -10,6 +10,7 @@ use lexwisp_platform_windows::{
     WindowsShell, hide_native_window, show_native_window, show_startup_error,
 };
 use lexwisp_plugins_builtin::{ChatController, ChatPanel, QuickShell, chat_action, chat_plugin};
+use lexwisp_plugins_script::ScriptRuntimeFactory;
 use lexwisp_storage::ConfigStore;
 use lexwisp_ui::{
     ChatPanelViewFactory, QuickShellViewFactory, SurfaceController, SurfaceServices,
@@ -106,6 +107,7 @@ fn run() -> Result<(), String> {
         context_handle,
         ui_sender,
         executable,
+        Arc::new(ScriptRuntimeFactory::new()),
     )?;
     let owners = Rc::new(RefCell::new(Some(RuntimeOwners {
         host: Some(host),

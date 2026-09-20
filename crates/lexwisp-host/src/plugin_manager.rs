@@ -8,8 +8,9 @@ use std::{
 
 use lexwisp_core::{
     ActionDescriptor, ActionHandler, Capability, HostUiCommand, ManagedActionSnapshot,
-    ManagedPluginStatus, ManagedPluginSummary, PluginId, PluginImportPreview,
-    PluginManagementFuture, PluginManagementUiPort, SettingsUiPort, TextActionUiPort, TextRunPort,
+    ManagedPluginStatus, ManagedPluginSummary, PluginId, PluginImportPreview, PluginKind,
+    PluginManagementFuture, PluginManagementUiPort, ScriptInvocationHost, ScriptPackageDefinition,
+    ScriptPackageFactory, ScriptPluginLifecycle, SettingsUiPort, TextActionUiPort, TextRunPort,
 };
 use lexwisp_storage::{ContentStore, StoredPlugin};
 use sha2::{Digest, Sha256};
@@ -43,6 +44,7 @@ struct PluginManagerInner {
     tasks: HostTaskPort,
     settings: Arc<dyn SettingsUiPort>,
     ui_commands: async_channel::Sender<HostUiCommand>,
+    script_factory: Arc<dyn ScriptPackageFactory>,
     operation: Mutex<()>,
     state: Mutex<ManagerState>,
 }
@@ -57,14 +59,75 @@ struct ManagerState {
 struct RuntimePlugin {
     summary: ManagedPluginSummary,
     descriptors: Vec<ActionDescriptor>,
-    controllers: Vec<Arc<DeclarativeController>>,
+    controllers: Vec<Arc<dyn TextActionUiPort>>,
+    lifecycle: Option<Arc<dyn ScriptPluginLifecycle>>,
 }
 
 struct PreparedPackage {
     source_path: PathBuf,
     staging_path: PathBuf,
     package_hash: String,
-    package: DeclarativePackage,
+    package: PreparedPackageKind,
+}
+
+enum PreparedPackageKind {
+    Declarative(DeclarativePackage),
+    Script(ScriptPackageDefinition),
+}
+
+impl PreparedPackageKind {
+    fn plugin(&self) -> &lexwisp_core::PluginDescriptor {
+        match self {
+            Self::Declarative(package) => &package.plugin,
+            Self::Script(package) => &package.plugin,
+        }
+    }
+
+    fn actions(&self) -> &[ActionDescriptor] {
+        match self {
+            Self::Declarative(package) => &package.actions,
+            Self::Script(package) => &package.actions,
+        }
+    }
+
+    fn version(&self) -> String {
+        match self {
+            Self::Declarative(package) => package.version.to_string(),
+            Self::Script(package) => package.version.clone(),
+        }
+    }
+
+    const fn kind(&self) -> PluginKind {
+        match self {
+            Self::Declarative(_) => PluginKind::Declarative,
+            Self::Script(_) => PluginKind::Script,
+        }
+    }
+
+    fn network_scopes(&self) -> Vec<String> {
+        match self {
+            Self::Declarative(_) => Vec::new(),
+            Self::Script(package) => package
+                .network_rules
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{}://{}:{} {} {}",
+                        rule.scheme,
+                        rule.host,
+                        rule.port
+                            .unwrap_or(if rule.scheme == "https" { 443 } else { 80 }),
+                        rule.methods.join("/"),
+                        if rule.path_prefixes.is_empty() {
+                            "/".into()
+                        } else {
+                            rule.path_prefixes.join(",")
+                        }
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 impl PluginManager {
@@ -78,6 +141,7 @@ impl PluginManager {
         tasks: HostTaskPort,
         settings: Arc<dyn SettingsUiPort>,
         ui_commands: async_channel::Sender<HostUiCommand>,
+        script_factory: Arc<dyn ScriptPackageFactory>,
     ) -> Result<Self, String> {
         let plugins_root = data_directory.join("plugins");
         let staging_root = plugins_root.join(".staging");
@@ -94,6 +158,7 @@ impl PluginManager {
                 tasks,
                 settings,
                 ui_commands,
+                script_factory,
                 operation: Mutex::new(()),
                 state: Mutex::new(ManagerState::default()),
             }),
@@ -132,11 +197,16 @@ impl PluginManager {
                             summary,
                             descriptors: Vec::new(),
                             controllers: Vec::new(),
+                            lifecycle: None,
                         },
                     );
                 continue;
             }
-            match prepare_directory(Path::new(&stored.install_path), None) {
+            match prepare_directory(
+                Path::new(&stored.install_path),
+                None,
+                self.inner.script_factory.as_ref(),
+            ) {
                 Ok(prepared) if prepared.package_hash == stored.package_hash => {
                     let predicted = self.inner.registry.generation().saturating_add(1);
                     match self.activate_package(&prepared, predicted, false) {
@@ -197,6 +267,7 @@ impl PluginManager {
                     summary,
                     descriptors: Vec::new(),
                     controllers: Vec::new(),
+                    lifecycle: None,
                 },
             );
     }
@@ -225,11 +296,11 @@ impl PluginManager {
         let token = Uuid::new_v4().to_string();
         let staging = self.inner.staging_root.join(&token);
         let prepared = if source.is_dir() {
-            prepare_directory(&source, Some(staging))?
+            prepare_directory(&source, Some(staging), self.inner.script_factory.as_ref())?
         } else {
-            prepare_zip(&source, &staging)?
+            prepare_zip(&source, &staging, self.inner.script_factory.as_ref())?
         };
-        let plugin_id = prepared.package.plugin.id().clone();
+        let plugin_id = prepared.package.plugin().id().clone();
         let installed = self
             .inner
             .state
@@ -257,7 +328,7 @@ impl PluginManager {
             cleanup_prepared(&prepared.staging_path);
             return Err("this exact plugin package is already installed".into());
         }
-        let requested = prepared.package.plugin.requested_capabilities().to_vec();
+        let requested = prepared.package.plugin().requested_capabilities().to_vec();
         let old_grants = installed
             .as_ref()
             .map(|current| current.granted_capabilities.as_slice())
@@ -270,15 +341,17 @@ impl PluginManager {
         let preview = PluginImportPreview {
             token: token.clone(),
             id: plugin_id,
-            name: prepared.package.plugin.display_name().to_owned(),
-            version: prepared.package.version.to_string(),
+            name: prepared.package.plugin().display_name().to_owned(),
+            version: prepared.package.version(),
+            kind: prepared.package.kind(),
             source_path: source,
             package_hash: prepared.package_hash.clone(),
             requested_capabilities: requested,
             added_capabilities: added,
+            network_scopes: prepared.package.network_scopes(),
             actions: prepared
                 .package
-                .actions
+                .actions()
                 .iter()
                 .map(|action| action.display_name().to_owned())
                 .collect(),
@@ -307,7 +380,7 @@ impl PluginManager {
             .previews
             .remove(token)
             .ok_or_else(|| "the import preview expired or was already used".to_string())?;
-        let plugin_id = prepared.package.plugin.id().clone();
+        let plugin_id = prepared.package.plugin().id().clone();
         let old = self
             .inner
             .state
@@ -322,7 +395,7 @@ impl PluginManager {
             .join(plugin_id.as_str())
             .join(format!(
                 "{}-{}",
-                prepared.package.version,
+                prepared.package.version(),
                 &prepared.package_hash[..12]
             ));
         let reuse_existing = old.as_ref().is_some_and(|current| {
@@ -340,11 +413,12 @@ impl PluginManager {
         }
 
         let generation = self.inner.registry.generation().saturating_add(1);
-        let grants = prepared.package.plugin.requested_capabilities().to_vec();
+        let grants = prepared.package.plugin().requested_capabilities().to_vec();
         let stored = StoredPlugin {
             id: plugin_id.to_string(),
-            name: prepared.package.plugin.display_name().to_owned(),
-            version: prepared.package.version.to_string(),
+            name: prepared.package.plugin().display_name().to_owned(),
+            version: prepared.package.version(),
+            kind: prepared.package.kind().manifest_name().to_owned(),
             package_hash: prepared.package_hash.clone(),
             source_path: prepared.source_path.to_string_lossy().into_owned(),
             install_path: final_path.to_string_lossy().into_owned(),
@@ -397,12 +471,16 @@ impl PluginManager {
             generation,
             grants,
         );
-        self.inner
+        let replaced = self
+            .inner
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .installed
             .insert(plugin_id, runtime);
+        if let Some(lifecycle) = replaced.and_then(|runtime| runtime.lifecycle) {
+            lifecycle.stop();
+        }
         if reuse_existing {
             cleanup_prepared(&prepared.staging_path);
         }
@@ -441,36 +519,80 @@ impl PluginManager {
         generation: u64,
         replacing: bool,
     ) -> Result<RuntimePlugin, String> {
-        let plugin_id = prepared.package.plugin.id().clone();
-        let runner: Arc<dyn TextRunPort> = Arc::new(ScopedTextRunPort::new_bound(
-            plugin_id.clone(),
-            self.inner.registry.actions(),
-            self.inner.capabilities.clone(),
-            self.inner.supervisor.clone(),
-            self.inner.tasks.clone(),
-            prepared.package_hash.clone(),
-            generation,
-        ));
-        let mut registrations = Vec::new();
-        let mut controllers = Vec::new();
-        for descriptor in &prepared.package.actions {
-            let controller = DeclarativeController::new(
-                descriptor.clone(),
-                runner.clone(),
-                self.inner.settings.clone(),
-            )?;
-            let handler: Arc<dyn ActionHandler> = controller.clone();
-            registrations.push((descriptor.clone(), handler));
-            controllers.push(controller);
-        }
+        let plugin_id = prepared.package.plugin().id().clone();
+        let (registrations, controllers, lifecycle) = match &prepared.package {
+            PreparedPackageKind::Declarative(package) => {
+                let runner: Arc<dyn TextRunPort> = Arc::new(ScopedTextRunPort::new_bound(
+                    plugin_id.clone(),
+                    self.inner.registry.actions(),
+                    self.inner.capabilities.clone(),
+                    self.inner.supervisor.clone(),
+                    self.inner.tasks.clone(),
+                    prepared.package_hash.clone(),
+                    generation,
+                ));
+                let mut registrations = Vec::new();
+                let mut controllers = Vec::new();
+                for descriptor in &package.actions {
+                    let controller = DeclarativeController::new(
+                        descriptor.clone(),
+                        runner.clone(),
+                        self.inner.settings.clone(),
+                    )?;
+                    let handler: Arc<dyn ActionHandler> = controller.clone();
+                    let port: Arc<dyn TextActionUiPort> = controller;
+                    registrations.push((descriptor.clone(), handler));
+                    controllers.push(port);
+                }
+                (registrations, controllers, None)
+            }
+            PreparedPackageKind::Script(package) => {
+                let host: Arc<dyn ScriptInvocationHost> =
+                    Arc::new(crate::script::BoundScriptHost::new(
+                        plugin_id.clone(),
+                        prepared.package_hash.clone(),
+                        generation,
+                        package.network_rules.clone(),
+                        self.inner.registry.actions(),
+                        self.inner.capabilities.clone(),
+                        self.inner.supervisor.clone(),
+                        self.inner.tasks.clone(),
+                        self.inner.content.clone(),
+                        self.inner.ui_commands.clone(),
+                    )?);
+                let activation = self.inner.script_factory.activate(
+                    install_path,
+                    package,
+                    host,
+                    self.inner.settings.clone(),
+                )?;
+                if activation.handlers.len() != package.actions.len()
+                    || activation.controllers.len() != package.actions.len()
+                {
+                    activation.lifecycle.stop();
+                    return Err("script runtime returned an incomplete action activation".into());
+                }
+                let registrations = package
+                    .actions
+                    .iter()
+                    .cloned()
+                    .zip(activation.handlers)
+                    .collect();
+                (
+                    registrations,
+                    activation.controllers,
+                    Some(activation.lifecycle),
+                )
+            }
+        };
         let actual_generation = if replacing {
             self.inner
                 .registry
-                .replace_package(prepared.package.plugin.clone(), registrations)
+                .replace_package(prepared.package.plugin().clone(), registrations)
         } else {
             self.inner
                 .registry
-                .register_package(prepared.package.plugin.clone(), registrations)
+                .register_package(prepared.package.plugin().clone(), registrations)
         }
         .map_err(|error| error.to_string())?;
         if actual_generation != generation {
@@ -478,25 +600,27 @@ impl PluginManager {
         }
         Ok(RuntimePlugin {
             summary: ManagedPluginSummary {
+                kind: prepared.package.kind(),
                 id: plugin_id,
-                name: prepared.package.plugin.display_name().to_owned(),
-                version: prepared.package.version.to_string(),
+                name: prepared.package.plugin().display_name().to_owned(),
+                version: prepared.package.version(),
                 source_path: prepared.source_path.clone(),
                 install_path: install_path.to_path_buf(),
                 package_hash: prepared.package_hash.clone(),
                 generation,
                 status: ManagedPluginStatus::Enabled,
-                granted_capabilities: prepared.package.plugin.requested_capabilities().to_vec(),
+                granted_capabilities: prepared.package.plugin().requested_capabilities().to_vec(),
                 actions: prepared
                     .package
-                    .actions
+                    .actions()
                     .iter()
                     .map(|action| action.display_name().to_owned())
                     .collect(),
                 last_error: None,
             },
-            descriptors: prepared.package.actions.clone(),
+            descriptors: prepared.package.actions().to_vec(),
             controllers,
+            lifecycle,
         })
     }
 
@@ -544,6 +668,9 @@ impl PluginManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(runtime) = state.installed.get_mut(&plugin_id) {
+                if let Some(lifecycle) = runtime.lifecycle.take() {
+                    lifecycle.stop();
+                }
                 runtime.summary = disabled;
                 runtime.descriptors.clear();
                 runtime.controllers.clear();
@@ -553,7 +680,11 @@ impl PluginManager {
             return Ok(());
         }
 
-        let prepared = prepare_directory(&summary.install_path, None)?;
+        let prepared = prepare_directory(
+            &summary.install_path,
+            None,
+            self.inner.script_factory.as_ref(),
+        )?;
         if prepared.package_hash != summary.package_hash {
             cleanup_prepared(&prepared.staging_path);
             return Err("managed files changed; choose Reload to preview and confirm them".into());
@@ -584,12 +715,16 @@ impl PluginManager {
             generation,
             summary.granted_capabilities.iter().copied(),
         );
-        self.inner
+        let replaced = self
+            .inner
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .installed
             .insert(plugin_id, runtime);
+        if let Some(lifecycle) = replaced.and_then(|runtime| runtime.lifecycle) {
+            lifecycle.stop();
+        }
         self.changed();
         Ok(())
     }
@@ -616,12 +751,16 @@ impl PluginManager {
         self.inner.supervisor.cancel_plugin(&plugin_id);
         self.inner.capabilities.revoke(&plugin_id);
         self.inner.registry.remove_package(&plugin_id);
-        self.inner
+        let removed = self
+            .inner
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .installed
             .remove(&plugin_id);
+        if let Some(lifecycle) = removed.and_then(|runtime| runtime.lifecycle) {
+            lifecycle.stop();
+        }
         cleanup_managed(&summary.install_path, &self.inner.plugins_root);
         self.changed();
         Ok(())
@@ -805,6 +944,10 @@ fn stored_summary(
     capabilities: Vec<Capability>,
 ) -> ManagedPluginSummary {
     ManagedPluginSummary {
+        kind: match stored.kind.as_str() {
+            "script" => PluginKind::Script,
+            _ => PluginKind::Declarative,
+        },
         id,
         name: stored.name.clone(),
         version: stored.version.clone(),
@@ -828,6 +971,7 @@ fn summary_to_stored(summary: &ManagedPluginSummary) -> StoredPlugin {
         id: summary.id.to_string(),
         name: summary.name.clone(),
         version: summary.version.clone(),
+        kind: summary.kind.manifest_name().to_owned(),
         package_hash: summary.package_hash.clone(),
         source_path: summary.source_path.to_string_lossy().into_owned(),
         install_path: summary.install_path.to_string_lossy().into_owned(),
@@ -845,6 +989,7 @@ fn summary_to_stored(summary: &ManagedPluginSummary) -> StoredPlugin {
 fn prepare_directory(
     source: &Path,
     destination: Option<PathBuf>,
+    script_factory: &dyn ScriptPackageFactory,
 ) -> Result<PreparedPackage, String> {
     if !source.is_dir() {
         return Err(format!(
@@ -860,7 +1005,7 @@ fn prepare_directory(
     fs::create_dir_all(&staging_path)
         .map_err(|error| format!("could not create plugin staging directory: {error}"))?;
     let result = copy_tree(source, &staging_path)
-        .and_then(|_| parse_staged(source.to_path_buf(), staging_path.clone(), String::new()));
+        .and_then(|_| parse_staged(source.to_path_buf(), staging_path.clone(), script_factory));
     if result.is_err() {
         let boundary = staging_path
             .parent()
@@ -871,7 +1016,11 @@ fn prepare_directory(
     result
 }
 
-fn prepare_zip(source: &Path, staging_path: &Path) -> Result<PreparedPackage, String> {
+fn prepare_zip(
+    source: &Path,
+    staging_path: &Path,
+    script_factory: &dyn ScriptPackageFactory,
+) -> Result<PreparedPackage, String> {
     let metadata =
         fs::metadata(source).map_err(|error| format!("could not inspect plugin ZIP: {error}"))?;
     if metadata.len() > MAX_ARCHIVE_BYTES {
@@ -944,7 +1093,7 @@ fn prepare_zip(source: &Path, staging_path: &Path) -> Result<PreparedPackage, St
         parse_staged(
             source.to_path_buf(),
             staging_path.to_path_buf(),
-            String::new(),
+            script_factory,
         )
     })();
     if result.is_err() {
@@ -1025,18 +1174,35 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 fn parse_staged(
     source_path: PathBuf,
     staging_path: PathBuf,
-    _unused_hash: String,
+    script_factory: &dyn ScriptPackageFactory,
 ) -> Result<PreparedPackage, String> {
     let manifest_path = staging_path.join("manifest.toml");
     let manifest = read_limited(&manifest_path, MAX_MANIFEST_BYTES)?;
-    let package = DeclarativePackage::parse_with_prompts(&manifest, |name| {
-        let relative = validate_relative_path(name)?;
-        if relative.extension().and_then(|value| value.to_str()) != Some("md") {
-            return Err("declarative prompt files must use the .md extension".into());
+    let manifest_value: toml::Value =
+        toml::from_str(&manifest).map_err(|error| format!("invalid plugin manifest: {error}"))?;
+    let kind = manifest_value
+        .get("plugin")
+        .and_then(|plugin| plugin.get("kind"))
+        .and_then(toml::Value::as_str)
+        .ok_or("plugin manifest is missing plugin.kind")?;
+    let package = match kind {
+        "declarative" => {
+            let package = DeclarativePackage::parse_with_prompts(&manifest, |name| {
+                let relative = validate_relative_path(name)?;
+                if relative.extension().and_then(|value| value.to_str()) != Some("md") {
+                    return Err("declarative prompt files must use the .md extension".into());
+                }
+                read_limited(&staging_path.join(relative), MAX_PROMPT_BYTES)
+            })?;
+            validate_package_files(&staging_path, PluginKind::Declarative)?;
+            PreparedPackageKind::Declarative(package)
         }
-        read_limited(&staging_path.join(relative), MAX_PROMPT_BYTES)
-    })?;
-    validate_stage6_files(&staging_path)?;
+        "script" => {
+            validate_package_files(&staging_path, PluginKind::Script)?;
+            PreparedPackageKind::Script(script_factory.inspect(&staging_path)?)
+        }
+        value => return Err(format!("unsupported plugin kind '{value}'")),
+    };
     let package_hash = hash_tree(&staging_path)?;
     Ok(PreparedPackage {
         source_path,
@@ -1046,7 +1212,7 @@ fn parse_staged(
     })
 }
 
-fn validate_stage6_files(root: &Path) -> Result<(), String> {
+fn validate_package_files(root: &Path, kind: PluginKind) -> Result<(), String> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         for item in fs::read_dir(&directory).map_err(|error| error.to_string())? {
@@ -1062,10 +1228,18 @@ fn validate_stage6_files(root: &Path) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             let allowed = relative == Path::new("manifest.toml")
                 || relative == Path::new("icon.svg")
-                || relative.extension().and_then(|value| value.to_str()) == Some("md");
+                || match kind {
+                    PluginKind::Declarative => {
+                        relative.extension().and_then(|value| value.to_str()) == Some("md")
+                    }
+                    PluginKind::Script => {
+                        relative.extension().and_then(|value| value.to_str()) == Some("js")
+                    }
+                };
             if !allowed {
                 return Err(format!(
-                    "Stage 6 declarative packages cannot contain '{}'",
+                    "{} packages cannot contain '{}'",
+                    kind.manifest_name(),
                     relative.display()
                 ));
             }
@@ -1172,6 +1346,7 @@ fn validate_file_limit(path: &Path, size: u64) -> Result<(), String> {
         Some("manifest.toml") => MAX_MANIFEST_BYTES,
         Some("icon.svg") => MAX_ICON_BYTES,
         _ if path.extension().and_then(|value| value.to_str()) == Some("md") => MAX_PROMPT_BYTES,
+        _ if path.extension().and_then(|value| value.to_str()) == Some("js") => MAX_PROMPT_BYTES,
         _ => MAX_EXTRACTED_BYTES,
     };
     if size > limit {
@@ -1242,6 +1417,26 @@ mod tests {
     use super::*;
     use semver::Version;
 
+    struct NoScriptFactory;
+
+    impl ScriptPackageFactory for NoScriptFactory {
+        fn inspect(&self, _: &Path) -> Result<ScriptPackageDefinition, String> {
+            Err("script factory must not be reached by this fixture".into())
+        }
+
+        fn activate(
+            &self,
+            _: &Path,
+            _: &ScriptPackageDefinition,
+            _: Arc<dyn ScriptInvocationHost>,
+            _: Arc<dyn SettingsUiPort>,
+        ) -> Result<lexwisp_core::ScriptActivation, String> {
+            Err("script factory must not be reached by this fixture".into())
+        }
+
+        fn shutdown(&self) {}
+    }
+
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir()
             .join("lexwisp-stage6-tests")
@@ -1287,7 +1482,7 @@ mod tests {
         fs::create_dir_all(&root).expect("test root");
         fs::write(root.join("manifest.toml"), "fixture").expect("manifest");
         fs::write(root.join("main.js"), "export function run() {};").expect("script");
-        assert!(validate_stage6_files(&root).is_err());
+        assert!(validate_package_files(&root, PluginKind::Declarative).is_err());
         fs::remove_dir_all(&root).expect("bounded test root is removable");
     }
 
@@ -1300,7 +1495,7 @@ mod tests {
             .expect("archive fixture")
             .set_len(MAX_ARCHIVE_BYTES + 1)
             .expect("sparse archive size");
-        assert!(prepare_zip(&archive, &root.join("staging")).is_err());
+        assert!(prepare_zip(&archive, &root.join("staging"), &NoScriptFactory).is_err());
         assert!(!root.join("staging").exists());
         fs::remove_dir_all(&root).expect("bounded test root is removable");
     }

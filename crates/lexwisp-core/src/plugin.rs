@@ -216,6 +216,16 @@ pub struct ActionDescriptor {
 pub enum ActionKind {
     Native,
     Declarative(DeclarativeActionDefinition),
+    Script(ScriptActionDefinition),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptActionDefinition {
+    pub handler: String,
+    pub parameters: Vec<ActionParameter>,
+    pub allowed_sources: Vec<ActionInputSource>,
+    pub dismiss_policy: crate::DismissPolicy,
+    pub output: ActionOutputPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -280,6 +290,52 @@ impl ActionDescriptor {
             id,
             display_name: display_name.into(),
             kind: ActionKind::Declarative(definition),
+        }
+    }
+
+    pub fn script(
+        plugin_id: PluginId,
+        id: ActionId,
+        display_name: impl Into<String>,
+        definition: ScriptActionDefinition,
+    ) -> Self {
+        Self {
+            plugin_id,
+            id,
+            display_name: display_name.into(),
+            kind: ActionKind::Script(definition),
+        }
+    }
+
+    pub fn text_parameters(&self) -> Option<&[ActionParameter]> {
+        match &self.kind {
+            ActionKind::Declarative(definition) => Some(&definition.parameters),
+            ActionKind::Script(definition) => Some(&definition.parameters),
+            ActionKind::Native => None,
+        }
+    }
+
+    pub fn text_sources(&self) -> Option<&[ActionInputSource]> {
+        match &self.kind {
+            ActionKind::Declarative(definition) => Some(&definition.allowed_sources),
+            ActionKind::Script(definition) => Some(&definition.allowed_sources),
+            ActionKind::Native => None,
+        }
+    }
+
+    pub fn text_output(&self) -> Option<&ActionOutputPolicy> {
+        match &self.kind {
+            ActionKind::Declarative(definition) => Some(&definition.output),
+            ActionKind::Script(definition) => Some(&definition.output),
+            ActionKind::Native => None,
+        }
+    }
+
+    pub fn text_dismiss_policy(&self) -> Option<crate::DismissPolicy> {
+        match &self.kind {
+            ActionKind::Declarative(definition) => Some(definition.dismiss_policy),
+            ActionKind::Script(definition) => Some(definition.dismiss_policy),
+            ActionKind::Native => None,
         }
     }
 
@@ -354,8 +410,24 @@ pub enum ManagedPluginStatus {
     Faulted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginKind {
+    Declarative,
+    Script,
+}
+
+impl PluginKind {
+    pub const fn manifest_name(self) -> &'static str {
+        match self {
+            Self::Declarative => "declarative",
+            Self::Script => "script",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedPluginSummary {
+    pub kind: PluginKind,
     pub id: PluginId,
     pub name: String,
     pub version: String,
@@ -375,10 +447,12 @@ pub struct PluginImportPreview {
     pub id: PluginId,
     pub name: String,
     pub version: String,
+    pub kind: PluginKind,
     pub source_path: PathBuf,
     pub package_hash: String,
     pub requested_capabilities: Vec<Capability>,
     pub added_capabilities: Vec<Capability>,
+    pub network_scopes: Vec<String>,
     pub actions: Vec<String>,
     pub replaces_version: Option<String>,
 }

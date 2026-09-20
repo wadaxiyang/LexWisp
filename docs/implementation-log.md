@@ -479,3 +479,60 @@ Runnable directory: `dist/stage-06/`. Archive: `dist/LexWisp-stage-06-windows-x6
 - No user-authorized Provider key was configured in the clean staged copy, so a real third-party action stream and disabling/reloading during an active paid request remain pending. Automatic tests cover scoped authorization, supervision, terminal-state rules, cancellation plumbing, SSE boundaries, and partial-result preservation but do not substitute for that native Provider gate.
 - Native drag-and-drop and the destructive uninstall confirmation were not exercised. The directory and ZIP pickers, install, replace/reload, disable, and re-enable paths were exercised; automated tests cover managed-path validation and persistence/registry rollback.
 - Windows 10, alternate DPI/multi-monitor layouts, alternate IMEs, clean-machine portability, long-run resource/GPU measurements, disk-full behavior, and malicious-package corpus expansion remain later/manual gates.
+
+## Stage 7 — 2026-09-20
+
+Status: **implemented and packaged; locked formatting/check/Clippy/test gates, the native hotkey fixture, Stage 07 Release launch, single-instance wake, schema-6 creation, script-package parsing/activation, bounded QuickJS execution, package-local modules, scoped Host APIs, KV quota/isolation, cancellation, and unload/revocation tests passed. Native button-level script import/run and a real Provider/HTTP multi-step stream remain pending because Windows Computer Use is unavailable in this restarted Codex session.**
+
+### Delivered supervised Script plugins
+
+- Added `lexwisp-plugins-script` with one lazily started `lexwisp-script` worker, one shared QuickJS runtime, and per-plugin contexts/module caches. The runtime is capped at 64 MiB with a 512 KiB stack; synchronous work is interrupted at 50 ms, cumulative JS job processing is bounded to 2 seconds, wall execution to 180 seconds, output to 2 MiB, and each scheduling turn pumps at most 64 jobs.
+- Added strict Script manifests and action metadata without changing the Stage 6 declarative format. Preview parses manifests and requested network scopes but does not execute JavaScript. Activation occurs only after explicit confirmation, and the installed type is persisted and displayed.
+- The module loader accepts only package-local relative JavaScript modules. Bare packages, Node/npm modules, remote modules, traversal, links, undeclared files, and non-JavaScript payloads remain unavailable. The shipped fixtures cover both a local helper module and rejection of a Node package import.
+- Exposed a finite, identity-bound asynchronous bridge: `ctx.ai.invoke`, `ctx.http.request`, `ctx.storage.get/set/delete`, `ctx.context.snapshot`, `ctx.output.append`, `ctx.ui.showResult`, `ctx.signal.isAborted`, and `ctx.log.write`. Plugins never receive Host handles, raw credentials, GPUI, HTTP clients, SQL connections, files, shell access, or a universal stringly typed invoke escape hatch.
+- Every sensitive bridge call revalidates the plugin ID, content hash, generation, Invocation, and current grant. Disable/reload/uninstall rejects new work, advances/revokes authority, cancels active Invocations, drops contexts, and rejects late Promise completions. Empty runtime state is reclaimed after the final context is unloaded.
+- Script AI calls reuse the existing Host provider registry, credentials, HTTP clients, business Tokio runtime, ExecutionStore, persistence projection, and Invocation supervisor. Streaming deltas and terminal transitions follow the same one-terminal-state rules as built-in and declarative actions; cancellation preserves partial copyable output.
+- Script HTTP uses the shared Host client with redirects and proxying disabled. Exact scheme/host/port/method/path rules are checked, DNS is resolved off the UI thread, local/private/reserved addresses are rejected before the request, the connected remote address is checked again, authentication/cookie headers are unavailable, and request/response bodies are capped.
+- Extended SQLite to schema 6 with an installed-plugin `kind` and namespaced `plugin_kv`. KV keys and values are validated, each plugin is limited to 5 MiB, namespaces are isolated, and uninstall preserves private data by default instead of cascading deletion.
+- Generalized Quick Shell and Control Center projections to render both declarative and Script text actions using existing Longbridge GPUI Kit inputs, buttons, selection, scrolling, and layout. Script booleans, numbers, and strings retain their types; the Plugins page displays the real plugin kind and approved network scopes. No parallel component library or alternate UI framework was introduced.
+- Added `docs/script-plugin-api.md`, packaged TypeScript declarations in `docs/lexwisp-plugin.d.ts`, and two credential-free examples: `script-text` for local-module text processing and `script-multistep` for AI/HTTP/KV composition. The latter uses the placeholder `api.example.com`; it neither embeds a secret nor claims to be a live endpoint.
+
+### Commands and automated evidence
+
+The final native Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **56 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real-hotkey replacement fixture passed.
+- New Script coverage proves shipped-example parsing, package-local module execution, rejection of Node package imports, synchronous-loop interruption, infinite-microtask bounding, oversized-output rejection, and rejection of a late Promise completion after disable.
+- New Host/storage coverage proves local-address network-rule rejection, grant/generation binding, KV namespace isolation, and the 5 MiB quota. Existing SSE boundaries, partial-result preservation, conversation state, history/retention barriers, declarative packages, settings, credentials, and schema-forward refusal remain green.
+
+### Staged Release smoke and artifacts
+
+Launched `C:\123\CODE\LexWisp\dist\stage-07\LexWisp.exe` from the actual final staged directory. The first process exposed a responsive `LexWisp · Settings` window. A second process exited 0 within five seconds and changed the first process's title to `LexWisp · Quick Shell`, preserving the single-instance wake path. The newly created portable database reported schema version 6 and the expected tables: `action_executions`, `conversation_deletions`, `conversations`, `execution_deletions`, `executions`, `favorites`, `installed_plugins`, `messages`, `plugin_grants`, `plugin_kv`, `retention_state`, and `schema_version`. Cleanup used `Stop-Process`, so this run is not claimed as a fresh explicit-quit UI test.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500; 34,132,275,200 bytes RAM; 96-DPI baseline |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Settings point sample | Working set 67,567,616 bytes; Private Bytes 84,357,120; 569 handles; 53 threads; responsive |
+| Release executable | 36,282,880 bytes; SHA-256 `dd401539e21fddf6e745ae5fd48e9296c60a9856ed4f274bc123723355417dfe` |
+| Release ZIP | 14,060,822 bytes; SHA-256 `2ac1e01a47fac22228f0843b0d6609fd3c48216bcc9a1cedace3e509cee1828c` |
+
+Runnable directory: `dist/stage-07/`. Archive: `dist/LexWisp-stage-07-windows-x64.zip`. Its exact entries are `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, `plugin-schema.md`, `script-plugin-api.md`, `lexwisp-plugin.d.ts`, `academic-polish-example.zip`, `script-text-example.zip`, `script-multistep-example.zip`, and `THIRD-PARTY-NOTICES.txt`. Generated settings, databases, logs, caches, credentials, Rust/Node runtimes, and developer source are not archived. Measurements are point samples, not leak/GPU/p95 claims; no working-set trimming was used.
+
+### Pending native acceptance and exact Computer Use blocker
+
+The `computer-use` skill and all references it marked required were read before automation. The prescribed first `cua.getState()` call returned an empty `apps` inventory together with `Browsers nodeRepl.fetch request failed`. Following the user's direct-runtime workaround, this session then attempted the native `@oai/sky` path once; it returned exactly `Trusted RPC service is not configured: sky`. These are Codex host/control-plane failures rather than LexWisp process failures, so inventory was not repeatedly retried.
+
+Consequently, importing the two Script examples through native buttons, confirming displayed network scopes, running/cancelling them from Quick Shell, observing streaming output, and testing disable/reload during a live bridge call remain pending. A user-authorized compatible Provider and a real approved HTTP test origin were also unavailable, so no paid request or real multi-step network flow is claimed. Automated tests cover the corresponding parser, authorization, supervision, cancellation, budget, late-completion, local-network, and storage risks but do not substitute for those native gates.
+
+Windows 10, alternate DPI/multi-monitor layouts and IMEs, native drag/drop/uninstall, clean-machine portability, malicious-package corpus expansion, disk-full behavior, and prolonged resource/GPU measurements remain later/manual acceptance work.

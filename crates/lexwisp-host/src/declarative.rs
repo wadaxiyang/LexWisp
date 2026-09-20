@@ -269,7 +269,9 @@ impl DeclarativeController {
     fn definition(&self) -> &DeclarativeActionDefinition {
         match self.descriptor.kind() {
             ActionKind::Declarative(definition) => definition,
-            ActionKind::Native => unreachable!("constructor validates action kind"),
+            ActionKind::Native | ActionKind::Script(_) => {
+                unreachable!("constructor validates action kind")
+            }
         }
     }
 

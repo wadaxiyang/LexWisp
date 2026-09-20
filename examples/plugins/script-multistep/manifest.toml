@@ -1,0 +1,34 @@
+schema_version = 1
+
+[plugin]
+id = "org.example.script-multistep"
+name = "Script Multi-step Example"
+version = "1.0.0"
+kind = "script"
+host_api = "^1.0"
+entry = "main.js"
+
+[capabilities]
+required = ["ai.invoke", "network.request", "storage.write"]
+optional = []
+
+[[capabilities.network]]
+scheme = "https"
+host = "api.example.com"
+port = 443
+methods = ["GET"]
+path_prefixes = ["/v1/"]
+
+[[actions]]
+id = "enrich"
+name = "Enrich with AI and HTTP"
+handler = "run"
+input_kind = "text"
+allowed_sources = ["manual", "selection"]
+dismiss_policy = "cancel"
+
+[actions.output]
+format = "text"
+allow_copy = true
+allow_favorite = true
+allow_replace = false

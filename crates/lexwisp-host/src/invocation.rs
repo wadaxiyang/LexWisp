@@ -4,10 +4,11 @@ use std::{
 };
 
 use lexwisp_core::{
-    AiMessage, AiRole, Capability, ChatCheckpoint, ChatInvocationRequest, ChatModelPreference,
-    ChatRunError, ChatRunFuture, ChatRunPort, CredentialStore, ExecutionObserver,
-    ExecutionSnapshot, ExecutionStatus, InvocationId, PluginId, ProviderError, QualifiedActionId,
-    TaskOwner, TextInvocationRequest, TextRunFuture, TextRunPort,
+    ActionDescriptor, ActionRequest, AiMessage, AiRole, Capability, ChatCheckpoint,
+    ChatInvocationRequest, ChatModelPreference, ChatRunError, ChatRunFuture, ChatRunPort,
+    CredentialStore, ExecutionObserver, ExecutionSnapshot, ExecutionStatus, InvocationId, PluginId,
+    ProviderError, ProviderId, QualifiedActionId, TaskOwner, TextInvocationRequest, TextRunFuture,
+    TextRunPort,
 };
 use tokio::sync::{Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -280,6 +281,164 @@ impl InvocationSupervisor {
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    pub(crate) fn begin_script(
+        &self,
+        invocation_id: InvocationId,
+        descriptor: &ActionDescriptor,
+        generation: u64,
+        request: &ActionRequest,
+        observer: Arc<dyn ExecutionObserver>,
+    ) -> Result<CancellationToken, String> {
+        if self.closing.is_cancelled() {
+            return Err("host is shutting down".into());
+        }
+        let cancellation = CancellationToken::new();
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                invocation_id.clone(),
+                ActiveInvocation {
+                    plugin_id: descriptor.plugin_id().clone(),
+                    conversation_id: None,
+                    cancellation: cancellation.clone(),
+                },
+            );
+        self.executions.start(ExecutionStart {
+            invocation_id,
+            plugin_id: descriptor.plugin_id().clone(),
+            action: descriptor.qualified_id(),
+            plugin_generation: generation,
+            conversation_id: None,
+            user_message_id: None,
+            assistant_message_id: None,
+            provider_id: ProviderId::parse("script").map_err(|error| error.to_string())?,
+            model_id: "quickjs".into(),
+            input: request.input.clone(),
+            chat: None,
+            observer,
+        });
+        Ok(cancellation)
+    }
+
+    pub(crate) fn script_output_len(&self, invocation_id: &InvocationId) -> usize {
+        self.executions
+            .snapshot(invocation_id)
+            .map(|snapshot| snapshot.output.len())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn append_script(
+        &self,
+        invocation_id: &InvocationId,
+        generation: u64,
+        text: &str,
+    ) -> Result<(), String> {
+        self.executions.append_text(invocation_id, generation, text)
+    }
+
+    pub(crate) async fn finish_script(
+        &self,
+        invocation_id: &InvocationId,
+        generation: u64,
+        result: Result<String, String>,
+    ) -> Result<String, String> {
+        let cancelled = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(invocation_id)
+            .is_some_and(|active| active.cancellation.is_cancelled());
+        let (status, error) = match &result {
+            Ok(text) if !cancelled => {
+                match self.executions.append_text(invocation_id, generation, text) {
+                    Ok(()) => (ExecutionStatus::Completed, None),
+                    Err(error) => (ExecutionStatus::Failed, Some(error)),
+                }
+            }
+            _ if cancelled => (
+                ExecutionStatus::Cancelled,
+                Some("request was cancelled".into()),
+            ),
+            Err(error) => (ExecutionStatus::Failed, Some(error.clone())),
+            Ok(_) => unreachable!(),
+        };
+        let committed = self
+            .executions
+            .commit_terminal(invocation_id, status, error)
+            .await;
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(invocation_id);
+        let snapshot = committed?;
+        if status == ExecutionStatus::Completed {
+            Ok(snapshot.output)
+        } else {
+            Err(snapshot
+                .error
+                .unwrap_or_else(|| "script invocation did not complete".into()))
+        }
+    }
+
+    pub(crate) async fn script_ai(
+        &self,
+        system: Option<String>,
+        input: String,
+        cancellation: &CancellationToken,
+    ) -> Result<String, String> {
+        let (provider, model_id) = self
+            .providers
+            .resolve(&ChatModelPreference::Fast)
+            .map_err(|error| error.to_string())?;
+        let credential = if let Some(reference) = provider.credential_ref() {
+            let store = self.credentials.clone();
+            let reference = reference.to_owned();
+            Some(
+                tokio::task::spawn_blocking(move || store.read(&reference))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        let mut messages = Vec::new();
+        if let Some(system) = system {
+            messages.push(AiMessage {
+                role: AiRole::System,
+                content: system,
+            });
+        }
+        messages.push(AiMessage {
+            role: AiRole::User,
+            content: input,
+        });
+        let output = Arc::new(Mutex::new(String::new()));
+        let collector = output.clone();
+        self.ai
+            .chat(
+                &provider,
+                &model_id,
+                credential.as_deref(),
+                &messages,
+                cancellation,
+                move |delta| {
+                    collector
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push_str(&delta);
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
     }
 }
 

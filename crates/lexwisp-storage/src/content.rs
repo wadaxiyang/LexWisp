@@ -45,6 +45,22 @@ enum StorageCommand {
         plugin_id: String,
         reply: mpsc::Sender<Result<(), StorageError>>,
     },
+    PluginKvGet {
+        plugin_id: String,
+        key: String,
+        reply: mpsc::Sender<Result<Option<String>, StorageError>>,
+    },
+    PluginKvSet {
+        plugin_id: String,
+        key: String,
+        value: String,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
+    PluginKvDelete {
+        plugin_id: String,
+        key: String,
+        reply: mpsc::Sender<Result<(), StorageError>>,
+    },
     Checkpoint {
         checkpoint: Box<ExecutionCheckpoint>,
         receipt: Option<mpsc::Sender<Result<(), StorageError>>>,
@@ -115,6 +131,7 @@ pub struct StoredPlugin {
     pub id: String,
     pub name: String,
     pub version: String,
+    pub kind: String,
     pub package_hash: String,
     pub source_path: String,
     pub install_path: String,
@@ -160,6 +177,52 @@ impl ContentStore {
         self.sender
             .send_blocking(StorageCommand::RemovePlugin {
                 plugin_id: plugin_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn plugin_kv_get(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::PluginKvGet {
+                plugin_id: plugin_id.to_owned(),
+                key: key.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn plugin_kv_set(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::PluginKvSet {
+                plugin_id: plugin_id.to_owned(),
+                key: key.to_owned(),
+                value: value.to_owned(),
+                reply,
+            })
+            .map_err(|_| StorageError::Closed)?;
+        response.recv().unwrap_or(Err(StorageError::Closed))
+    }
+
+    pub fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<(), StorageError> {
+        let (reply, response) = mpsc::channel();
+        self.sender
+            .send_blocking(StorageCommand::PluginKvDelete {
+                plugin_id: plugin_id.to_owned(),
+                key: key.to_owned(),
                 reply,
             })
             .map_err(|_| StorageError::Closed)?;
@@ -448,6 +511,43 @@ fn worker_main(
             StorageCommand::RemovePlugin { plugin_id, reply } => {
                 let _ = reply.send(remove_plugin(&mut connection, &plugin_id));
             }
+            StorageCommand::PluginKvGet {
+                plugin_id,
+                key,
+                reply,
+            } => {
+                let result = connection
+                    .query_row(
+                        "SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
+                        params![plugin_id, key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(sql_error);
+                let _ = reply.send(result);
+            }
+            StorageCommand::PluginKvSet {
+                plugin_id,
+                key,
+                value,
+                reply,
+            } => {
+                let _ = reply.send(set_plugin_kv(&mut connection, &plugin_id, &key, &value));
+            }
+            StorageCommand::PluginKvDelete {
+                plugin_id,
+                key,
+                reply,
+            } => {
+                let result = connection
+                    .execute(
+                        "DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2",
+                        params![plugin_id, key],
+                    )
+                    .map(|_| ())
+                    .map_err(sql_error);
+                let _ = reply.send(result);
+            }
             StorageCommand::Checkpoint {
                 checkpoint,
                 receipt,
@@ -614,6 +714,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
         && version != 3
         && version != 4
         && version != 5
+        && version != 6
     {
         return Err(StorageError::Start(format!(
             "database schema version {version} is not supported"
@@ -709,6 +810,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  id TEXT PRIMARY KEY,
                  name TEXT NOT NULL,
                  version TEXT NOT NULL,
+                 kind TEXT NOT NULL DEFAULT 'declarative',
                  package_hash TEXT NOT NULL,
                  source_path TEXT NOT NULL,
                  install_path TEXT NOT NULL,
@@ -723,6 +825,15 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
                  generation INTEGER NOT NULL,
                  capability TEXT NOT NULL,
                  PRIMARY KEY(plugin_id, capability)
+             );
+             CREATE TABLE IF NOT EXISTS plugin_kv (
+                 plugin_id TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 size_bytes INTEGER NOT NULL,
+                 schema_version INTEGER NOT NULL DEFAULT 1,
+                 updated_at_ms INTEGER NOT NULL,
+                 PRIMARY KEY(plugin_id, key)
              );
              UPDATE executions SET status = 'interrupted', updated_at_ms = unixepoch('subsec') * 1000
                  WHERE status IN ('queued', 'running', 'cancelling');
@@ -749,8 +860,24 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
             )
             .map_err(sql_error)?;
     }
+    if existing_version == Some(5) {
+        connection
+            .execute_batch(
+                "ALTER TABLE installed_plugins ADD COLUMN kind TEXT NOT NULL DEFAULT 'declarative';
+                 CREATE TABLE IF NOT EXISTS plugin_kv (
+                     plugin_id TEXT NOT NULL,
+                     key TEXT NOT NULL,
+                     value TEXT NOT NULL,
+                     size_bytes INTEGER NOT NULL,
+                     schema_version INTEGER NOT NULL DEFAULT 1,
+                     updated_at_ms INTEGER NOT NULL,
+                     PRIMARY KEY(plugin_id, key)
+                 );",
+            )
+            .map_err(sql_error)?;
+    }
     connection
-        .execute("UPDATE schema_version SET version = 5", [])
+        .execute("UPDATE schema_version SET version = 6", [])
         .map_err(sql_error)?;
     Ok(connection)
 }
@@ -758,7 +885,7 @@ fn open(path: &Path) -> Result<Connection, StorageError> {
 fn list_plugins(connection: &Connection) -> Result<Vec<StoredPlugin>, StorageError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, name, version, package_hash, source_path, install_path, enabled,
+            "SELECT id, name, version, kind, package_hash, source_path, install_path, enabled,
                     generation, last_error
              FROM installed_plugins ORDER BY name COLLATE NOCASE, id",
         )
@@ -772,9 +899,10 @@ fn list_plugins(connection: &Connection) -> Result<Vec<StoredPlugin>, StorageErr
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
-                row.get::<_, bool>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })
         .map_err(sql_error)?;
@@ -784,6 +912,7 @@ fn list_plugins(connection: &Connection) -> Result<Vec<StoredPlugin>, StorageErr
             id,
             name,
             version,
+            kind,
             package_hash,
             source_path,
             install_path,
@@ -809,6 +938,7 @@ fn list_plugins(connection: &Connection) -> Result<Vec<StoredPlugin>, StorageErr
             id,
             name,
             version,
+            kind,
             package_hash,
             source_path,
             install_path,
@@ -828,12 +958,13 @@ fn save_plugin(connection: &mut Connection, plugin: &StoredPlugin) -> Result<(),
     transaction
         .execute(
             "INSERT INTO installed_plugins(
-                 id, name, version, package_hash, source_path, install_path, enabled,
+                 id, name, version, kind, package_hash, source_path, install_path, enabled,
                  generation, last_error, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                  name = excluded.name,
                  version = excluded.version,
+                 kind = excluded.kind,
                  package_hash = excluded.package_hash,
                  source_path = excluded.source_path,
                  install_path = excluded.install_path,
@@ -845,6 +976,7 @@ fn save_plugin(connection: &mut Connection, plugin: &StoredPlugin) -> Result<(),
                 plugin.id,
                 plugin.name,
                 plugin.version,
+                plugin.kind,
                 plugin.package_hash,
                 plugin.source_path,
                 plugin.install_path,
@@ -878,6 +1010,52 @@ fn remove_plugin(connection: &mut Connection, plugin_id: &str) -> Result<(), Sto
         .execute("DELETE FROM installed_plugins WHERE id = ?1", [plugin_id])
         .map_err(sql_error)?;
     Ok(())
+}
+
+fn set_plugin_kv(
+    connection: &mut Connection,
+    plugin_id: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), StorageError> {
+    const PLUGIN_QUOTA: i64 = 5 * 1024 * 1024;
+    if key.is_empty()
+        || key.len() > 128
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(StorageError::Sql("plugin storage key is invalid".into()));
+    }
+    let value_size = i64::try_from(value.len())
+        .map_err(|_| StorageError::Sql("plugin storage value is too large".into()))?;
+    let transaction = connection.transaction().map_err(sql_error)?;
+    let current_size: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM plugin_kv
+             WHERE plugin_id = ?1 AND key != ?2",
+            params![plugin_id, key],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if current_size.saturating_add(value_size) > PLUGIN_QUOTA {
+        return Err(StorageError::Sql(
+            "plugin storage quota exceeds 5 MiB".into(),
+        ));
+    }
+    transaction
+        .execute(
+            "INSERT INTO plugin_kv(plugin_id, key, value, size_bytes, schema_version, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5)
+             ON CONFLICT(plugin_id, key) DO UPDATE SET
+                 value = excluded.value,
+                 size_bytes = excluded.size_bytes,
+                 schema_version = excluded.schema_version,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![plugin_id, key, value, value_size, now_ms()],
+        )
+        .map_err(sql_error)?;
+    transaction.commit().map_err(sql_error)
 }
 
 fn write_checkpoint(
@@ -2065,6 +2243,7 @@ mod tests {
             id: "org.example.fixture".into(),
             name: "Fixture".into(),
             version: "1.2.3".into(),
+            kind: "declarative".into(),
             package_hash: "abc123".into(),
             source_path: r"C:\fixtures\插件".into(),
             install_path: r"C:\data\plugins\fixture".into(),
@@ -2079,6 +2258,58 @@ mod tests {
             .remove_plugin("org.example.fixture")
             .expect("plugin removes");
         assert!(store.list_plugins().expect("plugins load").is_empty());
+        owner.shutdown();
+        fs::remove_dir_all(path.parent().expect("bounded test directory"))
+            .expect("test directory is removable");
+    }
+
+    #[test]
+    fn plugin_kv_is_namespaced_and_quota_bounded() {
+        let path = test_path();
+        let (owner, store) = ContentStoreOwner::start(path.clone()).expect("store starts");
+        for id in ["org.example.one", "org.example.two"] {
+            store
+                .save_plugin(StoredPlugin {
+                    id: id.into(),
+                    name: id.into(),
+                    version: "1.0.0".into(),
+                    kind: "script".into(),
+                    package_hash: "hash".into(),
+                    source_path: "source".into(),
+                    install_path: "install".into(),
+                    enabled: true,
+                    generation: 1,
+                    capabilities: vec!["storage.read".into(), "storage.write".into()],
+                    last_error: None,
+                })
+                .expect("plugin saves");
+        }
+        store
+            .plugin_kv_set("org.example.one", "shared", "one")
+            .expect("first namespace writes");
+        store
+            .plugin_kv_set("org.example.two", "shared", "two")
+            .expect("second namespace writes");
+        assert_eq!(
+            store
+                .plugin_kv_get("org.example.one", "shared")
+                .expect("first namespace reads")
+                .as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            store
+                .plugin_kv_get("org.example.two", "shared")
+                .expect("second namespace reads")
+                .as_deref(),
+            Some("two")
+        );
+        let oversized = "x".repeat(5 * 1024 * 1024 + 1);
+        assert!(
+            store
+                .plugin_kv_set("org.example.one", "too-large", &oversized)
+                .is_err()
+        );
         owner.shutdown();
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");

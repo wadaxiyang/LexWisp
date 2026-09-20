@@ -5,6 +5,7 @@ members = [
     "crates/lexwisp-host",
     "crates/lexwisp-platform-windows",
     "crates/lexwisp-plugins-builtin",
+    "crates/lexwisp-plugins-script",
     "crates/lexwisp-storage",
     "crates/lexwisp-ui",
 ]
@@ -26,11 +27,12 @@ lexwisp-core = { path = "crates/lexwisp-core" }
 lexwisp-host = { path = "crates/lexwisp-host" }
 lexwisp-platform-windows = { path = "crates/lexwisp-platform-windows" }
 lexwisp-plugins-builtin = { path = "crates/lexwisp-plugins-builtin" }
+lexwisp-plugins-script = { path = "crates/lexwisp-plugins-script" }
 lexwisp-storage = { path = "crates/lexwisp-storage" }
 lexwisp-ui = { path = "crates/lexwisp-ui" }
 raw-window-handle = "=0.6.2"
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls", "stream", "system-proxy"] }
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "loader"] }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"

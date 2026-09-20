@@ -8,6 +8,7 @@ mod history;
 mod ids;
 mod plugin;
 mod provider;
+mod script;
 mod settings;
 mod task;
 mod text_action;
@@ -40,11 +41,17 @@ pub use plugin::{
     ActionKind, ActionOutputPolicy, ActionParameter, ActionRequest, ActionResult, ActionUiPort,
     Capability, DeclarativeActionDefinition, ManagedActionSnapshot, ManagedPluginStatus,
     ManagedPluginSummary, ParameterKind, PluginDescriptor, PluginId, PluginImportPreview,
-    PluginManagementFuture, PluginManagementUiPort, QualifiedActionId,
+    PluginKind, PluginManagementFuture, PluginManagementUiPort, QualifiedActionId,
+    ScriptActionDefinition,
 };
 pub use provider::{
     CredentialError, CredentialStore, ModelProfile, ProviderConfig, ProviderDraft, ProviderError,
     ProviderId, ProviderTestResult, ProviderUiFuture, ProviderUiPort, ProviderUiSnapshot,
+};
+pub use script::{
+    ScriptActivation, ScriptFuture, ScriptHostCall, ScriptHttpRequest, ScriptInvocation,
+    ScriptInvocationHost, ScriptNetworkRule, ScriptPackageDefinition, ScriptPackageFactory,
+    ScriptPluginLifecycle,
 };
 pub use settings::{
     AppSettings, DismissPolicy, GlobalHotkey, LaunchMode, LaunchRoute, SettingsError,

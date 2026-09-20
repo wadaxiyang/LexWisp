@@ -15,11 +15,10 @@ use gpui_kit::{
     Styled, Task, Window, div, px, relative, size,
 };
 use lexwisp_core::{
-    ActionDescriptor, ActionKind, AppSettings, ClearHistoryMode, DismissPolicy, ExecutionStatus,
-    GlobalHotkey, HistoryCursor, HistoryDetail, HistoryPage, HistoryQuery, HistoryUiPort,
-    LaunchMode, ManagedPluginStatus, ManagedPluginSummary, ParameterKind, PluginId,
-    PluginImportPreview, PluginManagementUiPort, ProviderDraft, ProviderUiPort, SettingsUiPort,
-    ThemePreference,
+    ActionDescriptor, AppSettings, ClearHistoryMode, DismissPolicy, ExecutionStatus, GlobalHotkey,
+    HistoryCursor, HistoryDetail, HistoryPage, HistoryQuery, HistoryUiPort, LaunchMode,
+    ManagedPluginStatus, ManagedPluginSummary, ParameterKind, PluginId, PluginImportPreview,
+    PluginManagementUiPort, ProviderDraft, ProviderUiPort, SettingsUiPort, ThemePreference,
 };
 
 use crate::surface::apply_theme;
@@ -161,11 +160,11 @@ impl ControlCenter {
             cx.new(|cx| InputState::new(window, cx).placeholder("Favorite annotation"));
         let mut action_parameter_inputs = Vec::new();
         for descriptor in &actions {
-            let ActionKind::Declarative(definition) = descriptor.kind() else {
+            let Some(parameters) = descriptor.text_parameters() else {
                 continue;
             };
             let action = descriptor.qualified_id().to_string();
-            for parameter in &definition.parameters {
+            for parameter in parameters {
                 if matches!(parameter.kind, ParameterKind::Enum | ParameterKind::Boolean) {
                     continue;
                 }
@@ -1078,6 +1077,7 @@ impl ControlCenter {
                 .map(|capability| capability.manifest_name())
                 .collect::<Vec<_>>()
                 .join(", ");
+            let network_scopes = preview.network_scopes.join("; ");
             div()
                 .flex()
                 .flex_col()
@@ -1095,6 +1095,11 @@ impl ControlCenter {
                 .child(
                     div()
                         .text_sm()
+                        .child(format!("Type: {}", preview.kind.manifest_name())),
+                )
+                .child(
+                    div()
+                        .text_sm()
                         .child(format!("Source: {}", preview.source_path.display())),
                 )
                 .child(
@@ -1107,6 +1112,13 @@ impl ControlCenter {
                         .text_sm()
                         .child(format!("Requested permissions: {permissions}")),
                 )
+                .when(!network_scopes.is_empty(), |element| {
+                    element.child(
+                        div()
+                            .text_sm()
+                            .child(format!("Approved network scope: {network_scopes}")),
+                    )
+                })
                 .when(!added.is_empty(), |element| {
                     element.child(
                         div()
@@ -1187,11 +1199,11 @@ impl ControlCenter {
                         )
                         .child(div().text_sm().child(status)),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .child(format!("{} · declarative", plugin.id)),
-                )
+                .child(div().text_sm().child(format!(
+                    "{} · {}",
+                    plugin.id,
+                    plugin.kind.manifest_name()
+                )))
                 .child(
                     div()
                         .text_sm()
@@ -1497,7 +1509,7 @@ impl Render for ControlCenter {
             .actions
             .clone()
             .into_iter()
-            .filter(|descriptor| matches!(descriptor.kind(), ActionKind::Declarative(_)))
+            .filter(|descriptor| descriptor.text_dismiss_policy().is_some())
             .map(|descriptor| {
                 let action = descriptor.qualified_id().to_string();
                 let current = self.draft.dismiss_override(&action);
@@ -1558,16 +1570,14 @@ impl Render for ControlCenter {
                     )
             });
         let parameter_controls = self.actions.clone().into_iter().filter_map(|descriptor| {
-            let ActionKind::Declarative(definition) = descriptor.kind().clone() else {
-                return None;
-            };
+            let parameters = descriptor.text_parameters().map(<[_]>::to_vec)?;
             let action = descriptor.qualified_id().to_string();
             let mut group = div()
                 .flex()
                 .flex_col()
                 .gap_2()
                 .child(div().text_sm().child(descriptor.display_name().to_owned()));
-            for parameter in definition.parameters {
+            for parameter in parameters {
                 let current = self
                     .draft
                     .action_parameter_defaults(&action)

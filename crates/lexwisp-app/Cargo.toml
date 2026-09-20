@@ -16,6 +16,7 @@ lexwisp-core.workspace = true
 lexwisp-host.workspace = true
 lexwisp-platform-windows.workspace = true
 lexwisp-plugins-builtin.workspace = true
+lexwisp-plugins-script.workspace = true
 lexwisp-storage.workspace = true
 lexwisp-ui.workspace = true
 raw-window-handle.workspace = true

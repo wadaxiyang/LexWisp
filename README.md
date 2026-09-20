@@ -1,16 +1,16 @@
 # LexWisp
 
-LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 6: third-party declarative plugin management**.
+LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 7: local Script plugins with a finite Host API**.
 
-Stage 6 adds local directory/ZIP import, permission and content-hash preview, managed atomic installation, explicit same-ID replacement, enable/disable/reload/open-directory/uninstall actions, and live Quick Shell action refresh. Stage 5's history, favorites, privacy, diagnostics, and complete daily settings remain available.
+Stage 7 adds a lazy QuickJS worker, one shared bounded VM with isolated per-plugin Contexts, package-local ES modules, supervised return/stream output, and identity-bound AI/HTTP/KV/context/UI/cancellation/log ports. Script, declarative, and compiled Native plugins now use the same Action entry and lifecycle.
 
 ## Run
 
-Extract `LexWisp-stage-06-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
+Extract `LexWisp-stage-07-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
 - First launch opens Control Center. Enter an OpenAI-compatible Base URL and model ID. If the endpoint uses Bearer authentication, enter an API key, choose **Test**, then **Save provider**. The key is stored only in Windows Credential Manager.
 - Configure the shortcut, launch mode, default action, dismiss overrides, theme, startup, and retention settings, then choose **Save**.
-- Open **Plugins** to choose or drop one local declarative-plugin directory/ZIP. Review its source, actions, SHA-256, version, and requested permissions, then explicitly confirm installation. `academic-polish-example.zip` is a ready-to-import example; `plugin-schema.md` documents the exact accepted schema.
+- Open **Plugins** to choose or drop one local declarative or Script plugin directory/ZIP. Review its type, source, actions, SHA-256, version, and requested permissions, then explicitly confirm installation. The package includes declarative, pure-text Script, and AI/HTTP multi-step Script examples plus the exact schema/API/type documentation.
 - Plugin Reload validates changed managed files and opens a fresh confirmation preview before switching generations. Disable and Uninstall revoke grants and cancel active work; Uninstall removes only LexWisp's managed copy and preserves the original source and saved history.
 - The default shortcut is `Ctrl + Alt + Space`. The notification-area icon opens Quick Shell on left click and provides Quick Shell, Chat Panel, Settings, and Exit commands on right click.
 - In Quick Shell Chat, choose **Open chat…** to hand the current conversation—including an in-flight answer—to the independent panel. Closing either window does not cancel Chat; reopening it reads the current controller snapshot.
@@ -41,6 +41,6 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 ./scripts/package.ps1
 ```
 
-The QuickJS dependency probes remain test-only in `crates/lexwisp-app/tests/quickjs_probe.rs`; no script VM or probe tool ships in Stage 6. Script plugins begin in Stage 7 and are rejected by the Stage 6 importer.
+QuickJS is embedded in `LexWisp.exe`; no Node.js, npm, browser runtime, developer tool, or probe binary is required on an end-user machine. Scripts import only relative package-local `.js` modules and reach Host resources only through explicitly granted finite APIs.
 
 See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.

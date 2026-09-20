@@ -1,0 +1,34 @@
+schema_version = 1
+
+[plugin]
+id = "org.example.script-text"
+name = "Script Text Tools"
+version = "1.0.0"
+kind = "script"
+host_api = "^1.0"
+entry = "main.js"
+
+[capabilities]
+required = []
+optional = []
+
+[[actions]]
+id = "transform"
+name = "Uppercase (Script)"
+handler = "run"
+input_kind = "text"
+allowed_sources = ["manual", "selection"]
+dismiss_policy = "cancel"
+
+[[actions.parameters]]
+key = "uppercase"
+label = "Uppercase"
+kind = "boolean"
+required = false
+default = true
+
+[actions.output]
+format = "text"
+allow_copy = true
+allow_favorite = true
+allow_replace = false
