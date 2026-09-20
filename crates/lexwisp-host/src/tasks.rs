@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use lexwisp_core::TaskOwner;
@@ -10,6 +10,19 @@ use tokio_util::sync::CancellationToken;
 struct ScopeState {
     cancellation: CancellationToken,
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
+}
+
+impl ScopeState {
+    fn cancel(&self) {
+        self.cancellation.cancel();
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for task in tasks.iter() {
+            task.abort();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -33,7 +46,13 @@ impl TaskScope {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        let task = self.runtime.spawn(future);
+        // Keep the scope alive until its final task finishes. HostTaskPort stores only a Weak
+        // reference so completed Invocation scopes do not accumulate for the process lifetime.
+        let state = self.state.clone();
+        let task = self.runtime.spawn(async move {
+            let _scope_lifetime = state;
+            future.await
+        });
         self.retain(&task);
         task
     }
@@ -43,21 +62,17 @@ impl TaskScope {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let task = self.runtime.spawn_blocking(operation);
+        let state = self.state.clone();
+        let task = self.runtime.spawn_blocking(move || {
+            let _scope_lifetime = state;
+            operation()
+        });
         self.retain(&task);
         task
     }
 
     pub fn cancel(&self) {
-        self.state.cancellation.cancel();
-        let tasks = self
-            .state
-            .tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for task in tasks.iter() {
-            task.abort();
-        }
+        self.state.cancel();
     }
 
     fn retain<T>(&self, task: &JoinHandle<T>) {
@@ -74,7 +89,7 @@ impl TaskScope {
 #[derive(Clone)]
 pub struct HostTaskPort {
     runtime: Handle,
-    scopes: Arc<Mutex<Vec<TaskScope>>>,
+    scopes: Arc<Mutex<Vec<Weak<ScopeState>>>>,
 }
 
 impl HostTaskPort {
@@ -94,20 +109,76 @@ impl HostTaskPort {
                 tasks: Mutex::new(Vec::new()),
             }),
         };
-        self.scopes
+        let mut scopes = self
+            .scopes
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(scope.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scopes.retain(|scope| scope.strong_count() > 0);
+        scopes.push(Arc::downgrade(&scope.state));
+        drop(scopes);
         scope
     }
 
     pub fn cancel_all(&self) {
-        let scopes = self
+        let mut scopes = self
             .scopes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for scope in scopes.iter() {
+        scopes.retain(|scope| {
+            let Some(scope) = scope.upgrade() else {
+                return false;
+            };
             scope.cancel();
+            true
+        });
+    }
+
+    #[cfg(test)]
+    fn live_scope_count(&self) -> usize {
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        scopes.retain(|scope| scope.strong_count() > 0);
+        scopes.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_invocation_scopes_are_reclaimed() {
+        let tasks = HostTaskPort::new(Handle::current());
+        for ix in 0..100 {
+            let scope = tasks.scope(TaskOwner::Invocation(format!("stress-{ix}")));
+            scope.spawn(async {}).await.expect("task completes");
         }
+        tokio::task::yield_now().await;
+        assert_eq!(tasks.live_scope_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_scope_stays_cancellable_while_its_task_runs() {
+        let tasks = HostTaskPort::new(Handle::current());
+        let scope = tasks.scope(TaskOwner::Invocation("cancel-me".into()));
+        let cancellation = scope.cancellation();
+        let task = scope.spawn({
+            let cancellation = cancellation.clone();
+            async move {
+                cancellation.cancelled().await;
+            }
+        });
+        drop(scope);
+
+        tasks.cancel_all();
+        let _ = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancelled task stops promptly");
+        assert!(cancellation.is_cancelled());
+        assert_eq!(tasks.live_scope_count(), 0);
     }
 }

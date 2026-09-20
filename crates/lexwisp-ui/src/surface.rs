@@ -2,9 +2,9 @@ use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::{
-    AnyView, App, AppContext, Bounds, Context, IntoElement, ParentElement, Render, Styled,
-    Subscription, Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle, WindowId,
-    WindowOptions, div, px, size,
+    AnyView, App, AppContext, Bounds, Context, DisplayId, IntoElement, ParentElement, Pixels,
+    Render, Size, Styled, Subscription, Task, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowHandle, WindowId, WindowOptions, div, px, size,
 };
 use lexwisp_core::{
     ActionDescriptor, ChatUiPort, ContextSnapshot, HistoryUiPort, PluginManagementUiPort,
@@ -14,6 +14,7 @@ use lexwisp_core::{
 use crate::control_center::ControlCenter;
 
 pub trait SurfaceWindowPlatform {
+    fn active_display_id(&self) -> Option<u64>;
     fn hide(&self, window: &Window) -> Result<(), String>;
     fn show(&self, window: &Window) -> Result<(), String>;
 }
@@ -28,6 +29,7 @@ struct WindowEntry {
     handle: WindowHandle<Root>,
     state: SurfaceState,
     generation: u64,
+    warm_token: u64,
     warm_expiry: Option<Task<()>>,
 }
 
@@ -35,6 +37,19 @@ struct WindowEntry {
 pub struct WindowRegistry {
     entries: HashMap<SurfaceKind, WindowEntry>,
     next_generation: u64,
+    next_warm_token: u64,
+}
+
+impl WindowRegistry {
+    fn allocate_generation(&mut self) -> u64 {
+        self.next_generation = self.next_generation.saturating_add(1);
+        self.next_generation
+    }
+
+    fn allocate_warm_token(&mut self) -> u64 {
+        self.next_warm_token = self.next_warm_token.saturating_add(1);
+        self.next_warm_token
+    }
 }
 
 pub struct SurfaceController {
@@ -196,11 +211,41 @@ impl SurfaceController {
 
     pub fn close_chat_panel(&mut self, window: &mut Window, _: &mut Context<Self>) {
         self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
-        window.remove_window();
         self.registry.entries.remove(&SurfaceKind::ChatPanel);
+        window.remove_window();
+    }
+
+    fn close_chat_panel_if_generation(
+        &mut self,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_generation(SurfaceKind::ChatPanel, generation) {
+            window.remove_window();
+            return;
+        }
+        self.close_chat_panel(window, cx);
     }
 
     pub fn hide_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hide_current_quick_shell(window, cx);
+    }
+
+    fn hide_quick_shell_if_generation(
+        &mut self,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_generation(SurfaceKind::QuickShell, generation) {
+            window.remove_window();
+            return;
+        }
+        self.hide_current_quick_shell(window, cx);
+    }
+
+    fn hide_current_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.chat
             .set_surface_visible(SurfaceKind::QuickShell, false);
         for action in self.all_text_actions() {
@@ -214,18 +259,25 @@ impl SurfaceController {
         self.begin_warm_retention(cx);
     }
 
+    fn is_current_generation(&self, kind: SurfaceKind, generation: u64) -> bool {
+        self.registry
+            .entries
+            .get(&kind)
+            .is_some_and(|entry| entry.generation == generation)
+    }
+
     fn begin_warm_retention(&mut self, cx: &mut Context<Self>) {
         self.chat
             .set_surface_visible(SurfaceKind::QuickShell, false);
         for action in self.all_text_actions() {
             action.set_surface_visible(false);
         }
+        let warm_token = self.registry.allocate_warm_token();
         let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::QuickShell) else {
             return;
         };
         entry.state = SurfaceState::HiddenWarm;
-        entry.generation = entry.generation.saturating_add(1);
-        let generation = entry.generation;
+        entry.warm_token = warm_token;
         let retention = self
             .settings
             .snapshot()
@@ -238,7 +290,7 @@ impl SurfaceController {
             timer.await;
             let handle = controller
                 .update(cx, |controller, _| {
-                    controller.take_warm_quick_shell(generation)
+                    controller.take_warm_quick_shell(warm_token)
                 })
                 .ok()
                 .flatten();
@@ -253,13 +305,22 @@ impl SurfaceController {
     }
 
     pub fn window_closed(&mut self, id: WindowId) {
-        if self
+        let closed = self
             .registry
             .entries
-            .get(&SurfaceKind::ChatPanel)
-            .is_some_and(|entry| entry.handle.window_id() == id)
-        {
-            self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
+            .iter()
+            .filter_map(|(kind, entry)| (entry.handle.window_id() == id).then_some(*kind))
+            .collect::<Vec<_>>();
+        for kind in closed {
+            if kind == SurfaceKind::QuickShell {
+                self.chat
+                    .set_surface_visible(SurfaceKind::QuickShell, false);
+                for action in self.all_text_actions() {
+                    action.set_surface_visible(false);
+                }
+            } else if kind == SurfaceKind::ChatPanel {
+                self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
+            }
         }
         self.registry
             .entries
@@ -292,8 +353,7 @@ impl SurfaceController {
             self.registry.entries.remove(&kind);
         }
 
-        self.registry.next_generation = self.registry.next_generation.saturating_add(1);
-        let generation = self.registry.next_generation;
+        let generation = self.registry.allocate_generation();
         let controller = cx.weak_entity();
         let settings = self.settings.clone();
         let providers = self.providers.clone();
@@ -303,14 +363,15 @@ impl SurfaceController {
         let quick_shell_factory = self.quick_shell_factory.clone();
         let chat_panel_factory = self.chat_panel_factory.clone();
         let preference = settings.snapshot().settings().theme();
-        let options = build_window_options(kind, cx);
+        let display_id = self.platform.active_display_id().map(DisplayId::new);
+        let options = build_window_options(kind, display_id, cx);
         let handle = cx.open_window(options, move |window, cx| {
             apply_theme(preference, window, cx);
             if kind == SurfaceKind::QuickShell {
                 let controller_for_close = controller.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     let _ = controller_for_close.update(cx, |controller, cx| {
-                        controller.hide_quick_shell(window, cx);
+                        controller.hide_quick_shell_if_generation(generation, window, cx);
                     });
                     false
                 });
@@ -318,7 +379,7 @@ impl SurfaceController {
                 let controller_for_close = controller.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     let _ = controller_for_close.update(cx, |controller, cx| {
-                        controller.close_chat_panel(window, cx);
+                        controller.close_chat_panel_if_generation(generation, window, cx);
                     });
                     false
                 });
@@ -350,6 +411,7 @@ impl SurfaceController {
                 handle,
                 state: SurfaceState::Visible,
                 generation,
+                warm_token: 0,
                 warm_expiry: None,
             },
         );
@@ -364,13 +426,13 @@ impl SurfaceController {
         Ok(())
     }
 
-    fn take_warm_quick_shell(&mut self, generation: u64) -> Option<WindowHandle<Root>> {
+    fn take_warm_quick_shell(&mut self, warm_token: u64) -> Option<WindowHandle<Root>> {
         let should_destroy = self
             .registry
             .entries
             .get(&SurfaceKind::QuickShell)
             .is_some_and(|entry| {
-                entry.state == SurfaceState::HiddenWarm && entry.generation == generation
+                entry.state == SurfaceState::HiddenWarm && entry.warm_token == warm_token
             });
         if !should_destroy {
             return None;
@@ -389,7 +451,11 @@ impl SurfaceController {
     }
 }
 
-fn build_window_options(kind: SurfaceKind, cx: &App) -> WindowOptions {
+fn build_window_options(
+    kind: SurfaceKind,
+    display_id: Option<DisplayId>,
+    cx: &App,
+) -> WindowOptions {
     let (title, dimensions, minimum) = match kind {
         SurfaceKind::QuickShell => (
             "LexWisp · Quick Shell",
@@ -407,10 +473,14 @@ fn build_window_options(kind: SurfaceKind, cx: &App) -> WindowOptions {
             size(px(620.), px(600.)),
         ),
     };
+    let bounds = display_id
+        .and_then(|id| cx.find_display(id))
+        .or_else(|| cx.primary_display())
+        .map(|display| centered_in_work_area(display.visible_bounds(), dimensions))
+        .unwrap_or_else(|| Bounds::centered(display_id, dimensions, cx));
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None, dimensions, cx,
-        ))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        display_id,
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
             ..Default::default()
@@ -419,6 +489,10 @@ fn build_window_options(kind: SurfaceKind, cx: &App) -> WindowOptions {
         app_id: Some("org.lexwisp.LexWisp".into()),
         ..Default::default()
     }
+}
+
+fn centered_in_work_area(work_area: Bounds<Pixels>, dimensions: Size<Pixels>) -> Bounds<Pixels> {
+    Bounds::centered_at(work_area.center(), dimensions)
 }
 
 pub(crate) fn apply_theme(preference: ThemePreference, window: &mut Window, cx: &mut App) {
@@ -469,5 +543,31 @@ impl Render for LexWispWindowRoot {
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{bounds, point};
+
+    use super::*;
+
+    #[test]
+    fn placement_preserves_negative_monitor_coordinates() {
+        let work_area = bounds(point(px(-1920.), px(40.)), size(px(1920.), px(1040.)));
+        let placed = centered_in_work_area(work_area, size(px(720.), px(640.)));
+        assert_eq!(placed.origin, point(px(-1320.), px(240.)));
+        assert_eq!(placed.size, size(px(720.), px(640.)));
+    }
+
+    #[test]
+    fn warm_retention_does_not_advance_window_generation() {
+        let mut registry = WindowRegistry::default();
+        let first_window = registry.allocate_generation();
+        for _ in 0..100 {
+            registry.allocate_warm_token();
+        }
+        assert_eq!(registry.allocate_generation(), first_window + 1);
+        assert_eq!(registry.next_warm_token, 100);
     }
 }

@@ -27,7 +27,7 @@ pub(crate) struct BoundScriptHost {
     supervisor: Arc<InvocationSupervisor>,
     tasks: HostTaskPort,
     content: lexwisp_storage::ContentStore,
-    http: reqwest::Client,
+    http: Arc<reqwest::Client>,
     ui_commands: async_channel::Sender<HostUiCommand>,
 }
 
@@ -43,16 +43,10 @@ impl BoundScriptHost {
         supervisor: Arc<InvocationSupervisor>,
         tasks: HostTaskPort,
         content: lexwisp_storage::ContentStore,
+        http: Arc<reqwest::Client>,
         ui_commands: async_channel::Sender<HostUiCommand>,
-    ) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|error| format!("could not create script HTTP client: {error}"))?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             plugin_id,
             package_hash,
             generation,
@@ -64,7 +58,7 @@ impl BoundScriptHost {
             content,
             http,
             ui_commands,
-        })
+        }
     }
 }
 
@@ -127,7 +121,7 @@ struct BoundScriptInvocation {
     supervisor: Arc<InvocationSupervisor>,
     tasks: HostTaskPort,
     content: lexwisp_storage::ContentStore,
-    http: reqwest::Client,
+    http: Arc<reqwest::Client>,
     ui_commands: async_channel::Sender<HostUiCommand>,
     cancellation: CancellationToken,
 }

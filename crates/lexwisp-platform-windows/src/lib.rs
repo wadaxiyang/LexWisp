@@ -10,4 +10,6 @@ pub use context::{WindowsContextHandle, WindowsContextService};
 pub use credential::WindowsCredentialStore;
 pub use shell::{PlatformError, WindowsShell, WindowsShellHandle};
 pub use single_instance::{SingleInstance, SingleInstanceGuard};
-pub use window::{hide_native_window, show_native_window, show_startup_error};
+pub use window::{
+    display_id_under_cursor, hide_native_window, show_native_window, show_startup_error,
+};

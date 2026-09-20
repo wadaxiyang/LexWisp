@@ -7,7 +7,8 @@ use lexwisp_core::{ActionDescriptor, ActionHandler, ChatUiPort, HostUiCommand, T
 use lexwisp_host::{DeclarativeController, DeclarativePackage, Host};
 use lexwisp_platform_windows::{
     SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsContextService,
-    WindowsShell, hide_native_window, show_native_window, show_startup_error,
+    WindowsShell, display_id_under_cursor, hide_native_window, show_native_window,
+    show_startup_error,
 };
 use lexwisp_plugins_builtin::{ChatController, ChatPanel, QuickShell, chat_action, chat_plugin};
 use lexwisp_plugins_script::ScriptRuntimeFactory;
@@ -21,6 +22,10 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 struct NativeWindowPlatform;
 
 impl SurfaceWindowPlatform for NativeWindowPlatform {
+    fn active_display_id(&self) -> Option<u64> {
+        display_id_under_cursor()
+    }
+
     fn hide(&self, window: &Window) -> Result<(), String> {
         hide_native_window(native_handle(window)?)
     }

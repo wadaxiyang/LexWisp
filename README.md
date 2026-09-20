@@ -1,12 +1,12 @@
 # LexWisp
 
-LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 7: local Script plugins with a finite Host API**.
+LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 8: performance, compatibility, and fault-convergence hardening**.
 
-Stage 7 adds a lazy QuickJS worker, one shared bounded VM with isolated per-plugin Contexts, package-local ES modules, supervised return/stream output, and identity-bound AI/HTTP/KV/context/UI/cancellation/log ports. Script, declarative, and compiled Native plugins now use the same Action entry and lifecycle.
+Stage 8 keeps the Stage 7 plugin model and hardens long-running operation: completed task scopes are reclaimed, Script plugins share one Host-owned HTTP pool, stale window callbacks cannot affect newer windows, unexpected window closure detaches hidden projections, and new windows open in the visible work area of the display under the pointer (including negative-coordinate layouts).
 
 ## Run
 
-Extract `LexWisp-stage-07-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
+Extract `LexWisp-stage-08-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
 - First launch opens Control Center. Enter an OpenAI-compatible Base URL and model ID. If the endpoint uses Bearer authentication, enter an API key, choose **Test**, then **Save provider**. The key is stored only in Windows Credential Manager.
 - Configure the shortcut, launch mode, default action, dismiss overrides, theme, startup, and retention settings, then choose **Save**.

@@ -45,6 +45,7 @@ struct PluginManagerInner {
     settings: Arc<dyn SettingsUiPort>,
     ui_commands: async_channel::Sender<HostUiCommand>,
     script_factory: Arc<dyn ScriptPackageFactory>,
+    script_http: Arc<reqwest::Client>,
     operation: Mutex<()>,
     state: Mutex<ManagerState>,
 }
@@ -147,6 +148,17 @@ impl PluginManager {
         let staging_root = plugins_root.join(".staging");
         fs::create_dir_all(&staging_root)
             .map_err(|error| format!("could not create plugin staging directory: {error}"))?;
+        // Script HTTP has a stricter transport profile than Provider traffic, but every Script
+        // plugin shares this one Host-owned pool instead of creating a Client per activation.
+        let script_http = Arc::new(
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|error| format!("could not create script HTTP client: {error}"))?,
+        );
         Ok(Self {
             inner: Arc::new(PluginManagerInner {
                 plugins_root,
@@ -159,6 +171,7 @@ impl PluginManager {
                 settings,
                 ui_commands,
                 script_factory,
+                script_http,
                 operation: Mutex::new(()),
                 state: Mutex::new(ManagerState::default()),
             }),
@@ -558,8 +571,9 @@ impl PluginManager {
                         self.inner.supervisor.clone(),
                         self.inner.tasks.clone(),
                         self.inner.content.clone(),
+                        self.inner.script_http.clone(),
                         self.inner.ui_commands.clone(),
-                    )?);
+                    ));
                 let activation = self.inner.script_factory.activate(
                     install_path,
                     package,

@@ -7,10 +7,10 @@ try {
         cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
         if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     }
-    $stage = Join-Path $repo 'dist/stage-07'
+    $stage = Join-Path $repo 'dist/stage-08'
     $resolvedRepo = [IO.Path]::GetFullPath($repo).TrimEnd([IO.Path]::DirectorySeparatorChar)
     $resolvedStage = [IO.Path]::GetFullPath($stage)
-    if (-not $resolvedStage.StartsWith($resolvedRepo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolvedStage) -ne 'stage-07') {
+    if (-not $resolvedStage.StartsWith($resolvedRepo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolvedStage) -ne 'stage-08') {
         throw "Refusing to clean unexpected staging path: $resolvedStage"
     }
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
@@ -41,7 +41,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot collect locked dependency notices.' }
     $metadata = $metadataJson | ConvertFrom-Json
     $notices = [Text.StringBuilder]::new()
-    [void]$notices.AppendLine('LexWisp Stage 7 - third-party notices')
+    [void]$notices.AppendLine('LexWisp Stage 8 - third-party notices')
     [void]$notices.AppendLine('Inventory includes build/test dependencies, not all of which ship. QuickJS is embedded for local Script plugins. Package sources are unmodified; Windows fonts are not redistributed.')
     [void]$notices.AppendLine("Microsoft Visual C++ Runtime $redistVersion (vcruntime140.dll), Copyright Microsoft Corporation. App-local redistributable from Visual Studio Build Tools. Redistribution list: https://aka.ms/vs/18/redistribution")
     $texts = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
@@ -64,7 +64,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $stage 'THIRD-PARTY-NOTICES.txt'), $notices.ToString())
     # Explicit allowlist: never archive a directory that might contain user data.
     $files = @('LexWisp.exe', 'vcruntime140.dll', 'portable.flag', 'README.md', 'plugin-schema.md', 'script-plugin-api.md', 'lexwisp-plugin.d.ts', 'academic-polish-example.zip', 'script-text-example.zip', 'script-multistep-example.zip', 'THIRD-PARTY-NOTICES.txt') | ForEach-Object { Join-Path $stage $_ }
-    $archive = Join-Path $repo 'dist/LexWisp-stage-07-windows-x64.zip'
+    $archive = Join-Path $repo 'dist/LexWisp-stage-08-windows-x64.zip'
     Compress-Archive -LiteralPath $files -DestinationPath $archive -Force
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii

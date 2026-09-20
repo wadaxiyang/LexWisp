@@ -536,3 +536,68 @@ The `computer-use` skill and all references it marked required were read before 
 Consequently, importing the two Script examples through native buttons, confirming displayed network scopes, running/cancelling them from Quick Shell, observing streaming output, and testing disable/reload during a live bridge call remain pending. A user-authorized compatible Provider and a real approved HTTP test origin were also unavailable, so no paid request or real multi-step network flow is claimed. Automated tests cover the corresponding parser, authorization, supervision, cancellation, budget, late-completion, local-network, and storage risks but do not substitute for those native gates.
 
 Windows 10, alternate DPI/multi-monitor layouts and IMEs, native drag/drop/uninstall, clean-machine portability, malicious-package corpus expansion, disk-full behavior, and prolonged resource/GPU measurements remain later/manual acceptance work.
+
+## Stage 8 — 2026-09-20
+
+Status: **implemented and packaged as a Release verification build; all locked formatting/check/Clippy/test/build gates, the real hotkey-conflict fixture, hidden-resident idle budget, staged startup, repeated single-instance activation, resource counters, and unwritable-data-path error convergence passed. Exact hot-key-to-frame/cold-window p95, 100 native close/reopen cycles, and the full DPI/IME/system-event matrix remain pending because Windows Computer Use is unavailable in this Codex session.** Pending native gates are not represented as complete or renamed to process-level proxy measurements.
+
+### Measured fixes and focused regressions
+
+- Replaced `HostTaskPort`'s process-lifetime strong list of every `TaskScope` with a pruned weak registry. Spawned async and blocking tasks retain their own scope state until completion, so `cancel_all` still reaches live work while completed Invocation scopes are reclaimable. New tests complete 100 Invocation scopes and verify that a dropped owner remains cancellable while its task is running.
+- Moved Script HTTP Client construction to `PluginManager` initialization. Script generations now clone one Host-owned `Arc<reqwest::Client>` with the same no-redirect/no-proxy/timeouts policy instead of allocating a connection pool per activation or reload. The Provider client and Script client remain intentionally separate because their redirect/auth/network policies differ; there is still one business Tokio Runtime and one SQLite worker.
+- Split native window generation from warm-retention timer tokens. A late close callback is generation-checked and cannot remove a replacement window; repeated warm hide/show no longer mutates the window generation. Unexpected native closure now detaches Quick Shell Chat/text-action projections as well as Chat Panel projection, preventing hidden UI update work.
+- New windows select the Win32 monitor under the pointer and center in GPUI's `visible_bounds` work area. The implementation uses the exact locked GPUI Windows mapping from `HMONITOR` to `DisplayId`; a regression verifies placement on a negative-coordinate monitor. It falls back to the primary display/GPUI centering if cursor or display lookup is unavailable.
+- No speculative LTO, allocator, panic, or feature changes were made. The measured defects were corrected without a full-repository rewrite, a second UI framework, another Runtime, or working-set trimming.
+
+### Commands and automated evidence
+
+The final native Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo test -p lexwisp-platform-windows --locked --target x86_64-pc-windows-msvc replacement_conflict_preserves_the_previous_hotkey -- --ignored --nocapture
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Normal suite: **60 passed, 0 failed, 1 native fixture ignored by default**. The separately invoked real global-hotkey replacement fixture passed.
+- The 10,005-row storage regression still proves stable cursor paging beyond the 10,000-history target. Existing virtualized Chat/history lists, bounded streaming/coalescing, independent-conversation preparation, terminal/deletion barriers, SSE faults, Script CPU/job/memory/output limits, late-completion revocation, and damaged-manifest rollback remain green.
+- A forced portable-data creation failure (a regular file occupied the required `data` path) produced a responsive native window titled `LexWisp startup error`. The exact fixture process was stopped and its bounded temporary directory removed afterward.
+
+### Release measurements
+
+All measurements used the staged `dist/stage-08/LexWisp.exe` on Windows 11 Pro for Workstations 10.0.26200 build 26200, Intel Core i5-13500 (20 logical processors), 34,132,275,200 bytes visible RAM, and AppliedDPI 96. GPUs were NVIDIA RTX 5070 Ti driver 32.0.16.1047, Intel UHD 770 driver 31.0.101.3616, and GameViewer virtual adapter 15.6.5.199. No working-set trim API was used.
+
+| Measurement | Observed value and scope |
+| --- | --- |
+| Hidden-resident idle CPU | **0.0273% of the machine over 60 seconds**, no visible window and no task; passes the ≤0.5% target |
+| Hidden-resident memory | Working set 48,644,096 → 48,521,216 bytes; Private Bytes 59,301,888 → 59,117,568; observed ranges did not exceed their starting values |
+| Hidden-resident objects | Handles 437 → 434; threads 39 → 36; GDI 36; USER 8 |
+| Hidden-resident GPU point sample | Dedicated 12,996,608 bytes; shared 757,760 bytes, collected from Windows GPU Process Memory counters |
+| Visible Settings 60-second sample | CPU 0.1016% of machine; working set 70,778,880 → 67,645,440; Private Bytes 87,269,376 → 83,873,792; handles 569 → 560; threads 53 → 49 |
+| Visible Settings GUI/GPU point sample | GDI 46; USER 24; dedicated GPU 20,561,920 bytes; shared GPU 1,339,392 bytes |
+| Process-to-first-window | One clean staged launch 524.5 ms; 10 restart runs min 262.6 ms, median 264.2 ms, p95/max 304.0 ms; this is **process startup**, not the SPEC's resident-process cold-window metric |
+| Single-instance activation | First 100 launches all exited 0; launcher-process duration min 16.7 ms, median 17.6 ms, p95 19.3 ms, max 62.0 ms; this is **not** hotkey-to-interactive-frame latency |
+| Repeated visible activation stability | A second 100-launch run with Quick Shell already visible had p95 launcher exit 20.5 ms; working set −8,192 bytes, Private Bytes −8,192, handles +1, threads unchanged across the run |
+
+The first activation legitimately creates Quick Shell and increased Private Bytes relative to the Settings-only baseline; the separate already-visible 100-run interval was used to distinguish that one-time surface allocation from repeat-activation growth. These runs do not substitute for the required 100 close/destroy/recreate cycles.
+
+### Artifacts
+
+| Item | Value |
+| --- | --- |
+| Release executable | 36,321,280 bytes; SHA-256 `57eabe916b234972227a98e37e4656b2986a704562c2d1a9488af0e47fdb3693` |
+| Release ZIP | 14,077,279 bytes; SHA-256 `47cc9eb9841b7bd741196f17ae4a06cc68652d1cce3aadfb170fbfc56e27a06c` |
+
+Runnable directory: `dist/stage-08/`. Archive: `dist/LexWisp-stage-08-windows-x64.zip`, with adjacent matching checksum. The final allowlist contains `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, README, plugin schema/API/type documents, three example ZIPs, and generated third-party notices. A final packaging pass removed all smoke-test settings/database files from staging; no process remained running.
+
+### Pending native acceptance and exact blocker
+
+The required Longbridge `gpui-kit` and `gpui-kit-design-guides` skills, all task-required references, locked `Cargo.lock`, locked Kit/GPUI source, and matching Windows display implementation were read before UI work. The `computer-use` skill and its required guidance/API/confirmation references were also read before native automation.
+
+The prescribed first `cua.getState()` call returned an empty application inventory and `Browsers: Error: nodeRepl.fetch request failed`. The user-provided direct `@oai/sky` workaround was then tried once; `sky.list_apps()` returned exactly `Trusted RPC service is not configured: sky`. Following the skill's bounded recovery rule, neither path was repeatedly retried and no unsupported PowerShell/UIA replacement was used.
+
+Therefore the following remain pending: exact hotkey-to-first-interactive-frame p95; resident-process cold-window p95; 100 native close/destroy/reopen cycles with before/after GDI, USER, GPU, handle, thread and Private Bytes trends; 1,000-message live conversation interaction; sustained real Provider generation and concurrent conversations; disabling/reloading during a live bridge call; sleep/wake and network switching; 100/125/150/200% DPI; physical multi-monitor negative-coordinate placement, disconnect/reconnect, IME and focus recovery; higher/lower-integrity target applications; complex multi-format clipboard preservation; Explorer restart; Windows 10; and clean-machine portability. Automated and geometry tests cover relevant invariants but do not replace those native checks. A user-authorized Provider was not available, so no paid/network request is claimed.
