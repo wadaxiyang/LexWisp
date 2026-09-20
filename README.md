@@ -1,16 +1,16 @@
 # LexWisp
 
-LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current deliverable is **Stage 8: performance, compatibility, and fault-convergence hardening**.
+LexWisp is a portable, native Windows text tool built with Rust, GPUI, and Longbridge GPUI Kit. The current release is **v0.1.0**.
 
 Stage 8 keeps the Stage 7 plugin model and hardens long-running operation: completed task scopes are reclaimed, Script plugins share one Host-owned HTTP pool, stale window callbacks cannot affect newer windows, unexpected window closure detaches hidden projections, and new windows open in the visible work area of the display under the pointer (including negative-coordinate layouts).
 
 ## Run
 
-Extract `LexWisp-stage-08-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
+Extract `LexWisp-v0.1.0-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and the notice file beside it. The packaged `portable.flag` stores settings, `lexwisp.db`, and managed plugins under the extracted `data` directory; removing the flag before first launch uses `%LOCALAPPDATA%\LexWisp` instead.
 
 - First launch opens Control Center. Enter an OpenAI-compatible Base URL and model ID. If the endpoint uses Bearer authentication, enter an API key, choose **Test**, then **Save provider**. The key is stored only in Windows Credential Manager.
 - Configure the shortcut, launch mode, default action, dismiss overrides, theme, startup, and retention settings, then choose **Save**.
-- Open **Plugins** to choose or drop one local declarative or Script plugin directory/ZIP. Review its type, source, actions, SHA-256, version, and requested permissions, then explicitly confirm installation. The package includes declarative, pure-text Script, and AI/HTTP multi-step Script examples plus the exact schema/API/type documentation.
+- Open **Plugins** to choose or drop one local declarative or Script plugin directory/ZIP. Review its type, source, actions, SHA-256, version, and requested permissions, then explicitly confirm installation. Plugin-author schema, API/type documentation, and examples remain in the source repository rather than the runtime ZIP.
 - Plugin Reload validates changed managed files and opens a fresh confirmation preview before switching generations. Disable and Uninstall revoke grants and cancel active work; Uninstall removes only LexWisp's managed copy and preserves the original source and saved history.
 - The default shortcut is `Ctrl + Alt + Space`. The notification-area icon opens Quick Shell on left click and provides Quick Shell, Chat Panel, Settings, and Exit commands on right click.
 - In Quick Shell Chat, choose **Open chat…** to hand the current conversation—including an in-flight answer—to the independent panel. Closing either window does not cancel Chat; reopening it reads the current controller snapshot.
@@ -42,5 +42,7 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 ```
 
 QuickJS is embedded in `LexWisp.exe`; no Node.js, npm, browser runtime, developer tool, or probe binary is required on an end-user machine. Scripts import only relative package-local `.js` modules and reach Host resources only through explicitly granted finite APIs.
+
+Pushing a `v*` tag whose version matches the workspace package version runs the Windows formatting, check, Clippy, test, Release build, and packaging gates, then publishes the ZIP and checksum as a GitHub Release. The portable ZIP contains only `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`.
 
 See [LexWisp_SPEC.md](LexWisp_SPEC.md), [LexWisp_SPEC_EXTEND.md](LexWisp_SPEC_EXTEND.md), and [docs/implementation-log.md](docs/implementation-log.md) for scope and verified evidence.
