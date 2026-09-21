@@ -4,8 +4,9 @@ use std::{
     time::Duration,
 };
 
+use base64::Engine as _;
 use futures_util::StreamExt as _;
-use lexwisp_core::{AiMessage, AiRole, ProviderConfig, ProviderError};
+use lexwisp_core::{AiMessage, AiRole, ChatAttachmentContent, ProviderConfig, ProviderError};
 use reqwest::{Client, Proxy, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
@@ -21,15 +22,36 @@ pub struct AiService {
 }
 
 #[derive(Serialize)]
-struct RequestMessage<'a> {
+struct RequestMessage {
     role: &'static str,
-    content: &'a str,
+    content: RequestContent,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum RequestContent {
+    Text(String),
+    Parts(Vec<RequestContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum RequestContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: RequestImageUrl },
+}
+
+#[derive(Serialize)]
+struct RequestImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<RequestMessage<'a>>,
+    messages: Vec<RequestMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
@@ -97,17 +119,7 @@ impl AiService {
         mut on_delta: impl FnMut(String) -> Result<(), ProviderError>,
     ) -> Result<String, ProviderError> {
         let endpoint = completion_endpoint(provider.base_url())?;
-        let request_messages = messages
-            .iter()
-            .map(|message| RequestMessage {
-                role: match message.role {
-                    AiRole::System => "system",
-                    AiRole::User => "user",
-                    AiRole::Assistant => "assistant",
-                },
-                content: &message.content,
-            })
-            .collect();
+        let request_messages = messages.iter().map(request_message).collect();
         let body = ChatRequest {
             model: model_id,
             messages: request_messages,
@@ -154,6 +166,48 @@ impl AiService {
             on_delta(content.clone())?;
             Ok(content)
         }
+    }
+}
+
+fn request_message(message: &AiMessage) -> RequestMessage {
+    let role = match message.role {
+        AiRole::System => "system",
+        AiRole::User => "user",
+        AiRole::Assistant => "assistant",
+    };
+    if message.attachments.is_empty() {
+        return RequestMessage {
+            role,
+            content: RequestContent::Text(message.content.clone()),
+        };
+    }
+
+    let mut parts = Vec::with_capacity(message.attachments.len() + 1);
+    if !message.content.is_empty() {
+        parts.push(RequestContentPart::Text {
+            text: message.content.clone(),
+        });
+    }
+    for attachment in &message.attachments {
+        match attachment.content() {
+            ChatAttachmentContent::Text { text } => {
+                parts.push(RequestContentPart::Text {
+                    text: format!("Attachment ‘{}’:\n{text}", attachment.name()),
+                });
+            }
+            ChatAttachmentContent::Image { media_type, bytes } => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                parts.push(RequestContentPart::ImageUrl {
+                    image_url: RequestImageUrl {
+                        url: format!("data:{media_type};base64,{encoded}"),
+                    },
+                });
+            }
+        }
+    }
+    RequestMessage {
+        role,
+        content: RequestContent::Parts(parts),
     }
 }
 
@@ -434,6 +488,39 @@ mod tests {
     }
 
     #[test]
+    fn attachment_request_uses_inline_content_without_local_paths() {
+        let message = request_message(&AiMessage {
+            role: AiRole::User,
+            content: "Describe these files".into(),
+            attachments: vec![
+                lexwisp_core::ChatAttachment::image(
+                    "image-1",
+                    "sample.png",
+                    "image/png",
+                    Arc::<[u8]>::from([0_u8, 1, 2]),
+                ),
+                lexwisp_core::ChatAttachment::text("text-1", "notes.txt", "line one\nline two"),
+            ],
+        });
+
+        let value = serde_json::to_value(message).expect("request serializes");
+        assert_eq!(value["role"], "user");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(
+            value["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAEC"
+        );
+        assert_eq!(value["content"][2]["type"], "text");
+        assert!(
+            value["content"][2]["text"]
+                .as_str()
+                .expect("text part")
+                .contains("notes.txt")
+        );
+        assert!(!value.to_string().contains("file://"));
+    }
+
+    #[test]
     fn sse_decoder_handles_fragmented_utf8_json_and_multiline_data() {
         let source =
             "data: {\"choices\":[{\"delta\":{\"content\":\"中\"}}]}\r\n\r\ndata: [DONE]\n\n";
@@ -483,6 +570,7 @@ mod tests {
                     &[AiMessage {
                         role: AiRole::User,
                         content: "hello".into(),
+                        attachments: Vec::new(),
                     }],
                     &CancellationToken::new(),
                     |_| Ok(()),
@@ -515,6 +603,7 @@ mod tests {
                 &[AiMessage {
                     role: AiRole::User,
                     content: "hello".into(),
+                    attachments: Vec::new(),
                 }],
                 &CancellationToken::new(),
                 |_| Ok(()),
@@ -546,6 +635,7 @@ mod tests {
                 &[AiMessage {
                     role: AiRole::User,
                     content: "hello".into(),
+                    attachments: Vec::new(),
                 }],
                 &CancellationToken::new(),
                 move |delta| {
@@ -592,6 +682,7 @@ mod tests {
                 &[AiMessage {
                     role: AiRole::User,
                     content: "hello".into(),
+                    attachments: Vec::new(),
                 }],
                 &cancellation,
                 |_| Ok(()),

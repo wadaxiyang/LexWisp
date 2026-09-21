@@ -15,6 +15,93 @@ pub enum ChatMessageStatus {
     FailedPartial,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChatAttachmentContent {
+    Image {
+        media_type: String,
+        bytes: Arc<[u8]>,
+    },
+    Text {
+        text: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChatAttachment {
+    id: String,
+    name: String,
+    content: ChatAttachmentContent,
+}
+
+impl ChatAttachment {
+    pub fn image(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        media_type: impl Into<String>,
+        bytes: impl Into<Arc<[u8]>>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            content: ChatAttachmentContent::Image {
+                media_type: media_type.into(),
+                bytes: bytes.into(),
+            },
+        }
+    }
+
+    pub fn text(id: impl Into<String>, name: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            content: ChatAttachmentContent::Text { text: text.into() },
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn content(&self) -> &ChatAttachmentContent {
+        &self.content
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ChatDraft {
+    text: String,
+    attachments: Vec<ChatAttachment>,
+}
+
+impl ChatDraft {
+    pub fn new(text: impl Into<String>, attachments: Vec<ChatAttachment>) -> Self {
+        Self {
+            text: text.into(),
+            attachments,
+        }
+    }
+
+    pub fn text_only(text: impl Into<String>) -> Self {
+        Self::new(text, Vec::new())
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn attachments(&self) -> &[ChatAttachment] {
+        &self.attachments
+    }
+
+    pub fn into_parts(self) -> (String, Vec<ChatAttachment>) {
+        (self.text, self.attachments)
+    }
+}
+
 impl ChatMessageStatus {
     pub const fn persistence_name(self) -> &'static str {
         match self {
@@ -82,6 +169,7 @@ pub struct ChatMessageSnapshot {
     pub id: MessageId,
     pub is_user: bool,
     pub content: String,
+    pub attachments: Arc<Vec<ChatAttachment>>,
     pub status: ChatMessageStatus,
     pub ordinal: u64,
     pub attempt_id: Option<AttemptId>,
@@ -201,7 +289,7 @@ impl PersistedChatConversation {
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ChatError {
-    #[error("enter a message before sending")]
+    #[error("enter a message or attach a supported file before sending")]
     EmptyInput,
     #[error("a response is already being generated")]
     Busy,
@@ -237,7 +325,10 @@ pub trait ChatUiPort: Send + Sync {
     fn switch_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError>;
     fn delete_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError>;
     fn set_model_preference(&self, preference: ChatModelPreference) -> Result<(), ChatError>;
-    fn send(&self, input: String) -> ChatUiResultFuture<'_>;
+    fn send(&self, input: String) -> ChatUiResultFuture<'_> {
+        self.send_draft(ChatDraft::text_only(input))
+    }
+    fn send_draft(&self, draft: ChatDraft) -> ChatUiResultFuture<'_>;
     fn stop(&self) -> Result<(), ChatError>;
     fn retry(&self) -> ChatUiResultFuture<'_>;
 }

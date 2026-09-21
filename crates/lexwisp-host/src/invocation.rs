@@ -420,11 +420,13 @@ impl InvocationSupervisor {
             messages.push(AiMessage {
                 role: AiRole::System,
                 content: system,
+                attachments: Vec::new(),
             });
         }
         messages.push(AiMessage {
             role: AiRole::User,
             content: input,
+            attachments: Vec::new(),
         });
         let output = Arc::new(Mutex::new(String::new()));
         let collector = output.clone();
@@ -649,10 +651,12 @@ impl TextRunPort for ScopedTextRunPort {
                 AiMessage {
                     role: AiRole::System,
                     content: prompt,
+                    attachments: Vec::new(),
                 },
                 AiMessage {
                     role: AiRole::User,
                     content: request.input.clone(),
+                    attachments: Vec::new(),
                 },
             ],
             input: request.input,

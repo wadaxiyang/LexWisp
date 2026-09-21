@@ -3,21 +3,21 @@
 use std::{cell::RefCell, process::ExitCode, rc::Rc, sync::Arc};
 
 use gpui_kit::{
-    AppContext, AsyncApp, Entity, Global, QuitMode, Subscription, Task, WeakEntity, Window,
+    AppContext, AsyncApp, Bounds, Entity, Global, Pixels, QuitMode, Subscription, Task, WeakEntity,
+    Window,
 };
-use lexwisp_core::{ActionDescriptor, ActionHandler, ChatUiPort, HostUiCommand, TextActionUiPort};
+use lexwisp_core::{ActionDescriptor, ActionHandler, ChatUiPort, HostUiCommand};
 use lexwisp_host::Host;
 use lexwisp_platform_windows::{
     SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsContextService,
-    WindowsShell, display_id_under_cursor, hide_native_window, show_native_window,
-    show_startup_error,
+    WindowsShell, display_id_under_cursor, hide_native_window, set_native_window_bounds,
+    show_native_window, show_startup_error,
 };
-use lexwisp_plugins_builtin::{ChatController, ChatPanel, QuickShell, chat_action, chat_plugin};
+use lexwisp_plugins_builtin::{ChatController, ChatExperience, chat_action, chat_plugin};
 use lexwisp_plugins_script::ScriptRuntimeFactory;
 use lexwisp_storage::ConfigStore;
 use lexwisp_ui::{
-    ChatPanelViewFactory, QuickShellViewFactory, SurfaceController, SurfaceServices,
-    SurfaceWindowPlatform,
+    ShellContentViewFactory, SurfaceController, SurfaceServices, SurfaceWindowPlatform,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -35,6 +35,17 @@ impl SurfaceWindowPlatform for NativeWindowPlatform {
     fn show(&self, window: &Window) -> Result<(), String> {
         show_native_window(native_handle(window)?)
     }
+
+    fn set_bounds(&self, window: &Window, bounds: Bounds<Pixels>) -> Result<(), String> {
+        set_native_window_bounds(
+            native_handle(window)?,
+            bounds.origin.x.as_f32(),
+            bounds.origin.y.as_f32(),
+            bounds.size.width.as_f32(),
+            bounds.size.height.as_f32(),
+            window.scale_factor(),
+        )
+    }
 }
 
 fn native_handle(window: &Window) -> Result<isize, String> {
@@ -51,29 +62,31 @@ fn handle_ui_command(
     cx: &mut AsyncApp,
 ) -> bool {
     let result = match command {
-        HostUiCommand::ToggleQuickShell { launch_generation } => surfaces
+        HostUiCommand::ToggleMainShell { launch_generation } => surfaces
             .update(cx, |surfaces, cx| {
-                surfaces.toggle_quick_shell(launch_generation, cx)
+                surfaces.toggle_main_shell(launch_generation, cx)
             })
             .and_then(|result| result)
-            .map_err(|error| ("toggle Quick Shell", error)),
+            .map_err(|error| ("toggle Main Shell", error)),
         HostUiCommand::ApplyLaunchContext {
             launch_generation,
             snapshot,
         } => surfaces
-            .update(cx, |surfaces, _| {
-                surfaces.apply_launch_context(launch_generation, snapshot)
+            .update(cx, |surfaces, cx| {
+                surfaces.apply_launch_context(launch_generation, snapshot, cx)
             })
             .and_then(|result| result)
             .map_err(|error| ("apply launch context", error)),
-        HostUiCommand::ShowQuickShell => surfaces
-            .update(cx, |surfaces, cx| surfaces.show_quick_shell(cx))
+        HostUiCommand::ShowMainShell => surfaces
+            .update(cx, |surfaces, cx| surfaces.show_main_shell(cx))
             .and_then(|result| result)
-            .map_err(|error| ("open Quick Shell", error)),
-        HostUiCommand::ShowChatPanel => surfaces
-            .update(cx, |surfaces, cx| surfaces.handoff_to_chat_panel(cx))
+            .map_err(|error| ("open Main Shell", error)),
+        HostUiCommand::SetMainShellPresentation(presentation) => surfaces
+            .update(cx, |surfaces, cx| {
+                surfaces.set_main_shell_presentation(presentation, cx)
+            })
             .and_then(|result| result)
-            .map_err(|error| ("open Chat", error)),
+            .map_err(|error| ("change Main Shell presentation", error)),
         HostUiCommand::ShowControlCenter => surfaces
             .update(cx, |surfaces, cx| surfaces.show_control_center(cx))
             .and_then(|result| result)
@@ -175,9 +188,6 @@ fn run() -> Result<(), String> {
     let owners_for_app = owners.clone();
     let settings = handles.settings();
     let providers = handles.providers();
-    let actions = handles.action_ui();
-    let context_ui = handles.context();
-    let favorites = handles.favorites();
     let history = handles.history();
     let plugin_management = handles.plugin_management();
     let plugin = chat_plugin();
@@ -198,38 +208,17 @@ fn run() -> Result<(), String> {
     );
     let chat: Arc<dyn ChatUiPort> = chat_controller.clone();
     let descriptors: Vec<ActionDescriptor> = vec![action.clone()];
-    let text_actions: Vec<Arc<dyn TextActionUiPort>> = Vec::new();
     handles.activate_installed_plugins()?;
-    let (launch_sender, launch_receiver) = async_channel::bounded(1);
-    let quick_shell_factory: QuickShellViewFactory = {
+    let shell_content_factory: ShellContentViewFactory = {
         let chat = chat.clone();
-        let actions = actions.clone();
-        let action = chat_controller.action_id();
-        let settings = settings.clone();
-        let context_ui = context_ui.clone();
-        let favorites = favorites.clone();
-        let descriptors = descriptors.clone();
-        let text_actions = text_actions.clone();
-        let plugin_management = plugin_management.clone();
-        let launch_receiver = launch_receiver.clone();
-        Rc::new(move |controller, window, cx| {
-            let managed = plugin_management.action_snapshot();
-            let mut current_descriptors = descriptors.clone();
-            current_descriptors.extend(managed.descriptors);
-            let mut current_text_actions = text_actions.clone();
-            current_text_actions.extend(managed.controllers);
+        let providers = providers.clone();
+        Rc::new(move |controller, session, window, cx| {
             cx.new(|cx| {
-                QuickShell::new(
+                ChatExperience::new(
                     controller,
-                    settings.clone(),
-                    context_ui.clone(),
-                    favorites.clone(),
-                    actions.clone(),
+                    session,
                     chat.clone(),
-                    action.clone(),
-                    current_descriptors,
-                    current_text_actions,
-                    launch_receiver.clone(),
+                    providers.clone(),
                     window,
                     cx,
                 )
@@ -237,15 +226,6 @@ fn run() -> Result<(), String> {
             .into()
         })
     };
-    let chat_panel_factory: ChatPanelViewFactory = {
-        let chat = chat.clone();
-        let providers = providers.clone();
-        Rc::new(move |controller, window, cx| {
-            cx.new(|cx| ChatPanel::new(controller, chat.clone(), providers.clone(), window, cx))
-                .into()
-        })
-    };
-
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
@@ -260,13 +240,9 @@ fn run() -> Result<(), String> {
                         chat.clone(),
                         history.clone(),
                         plugin_management.clone(),
-                        text_actions.clone(),
                         descriptors.clone(),
                     ),
-                    launch_sender.clone(),
-                    launch_receiver.clone(),
-                    quick_shell_factory.clone(),
-                    chat_panel_factory.clone(),
+                    shell_content_factory.clone(),
                 )
             });
             let surface_for_commands = surfaces.downgrade();

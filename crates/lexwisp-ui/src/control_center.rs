@@ -318,10 +318,7 @@ impl ControlCenter {
                 view.plugin_busy = false;
                 view.plugins = view.plugin_management.list();
                 view.plugin_status = match result {
-                    Ok(()) => {
-                        "Plugin installed and activated. Quick Shell will use the new action list."
-                            .into()
-                    }
+                    Ok(()) => "Plugin installed and activated.".into(),
                     Err(error) => {
                         format!("Install failed; the previous version remains active: {error}")
                             .into()
@@ -1770,7 +1767,7 @@ impl Render for ControlCenter {
             )
             .child(div().text_lg().child("System"))
             .child(setting_group("Global shortcut", hotkeys))
-            .child(div().text_lg().child("Quick Shell behavior"))
+            .child(div().text_lg().child("Installed text action compatibility"))
             .child(setting_group("Shortcut launch mode", launch_modes))
             .child(setting_group("Default action", default_actions))
             .child(setting_group("Dismiss behavior", dismiss_controls))
@@ -1804,7 +1801,7 @@ impl Render for ControlCenter {
                             })),
                     ),
             )
-            .child(setting_group("Quick Shell retention", retention))
+            .child(setting_group("Main Shell retention", retention))
             .child(
                 div()
                     .flex()

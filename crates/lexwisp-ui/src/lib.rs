@@ -4,6 +4,6 @@ mod control_center;
 mod surface;
 
 pub use surface::{
-    ChatPanelViewFactory, QuickShellViewFactory, SurfaceController, SurfaceFactory,
-    SurfaceServices, SurfaceWindowPlatform, WindowRegistry,
+    ShellContentViewFactory, ShellSession, SurfaceController, SurfaceFactory, SurfaceServices,
+    SurfaceWindowPlatform, WindowRegistry,
 };

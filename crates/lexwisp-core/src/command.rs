@@ -1,21 +1,28 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SurfaceKind {
-    QuickShell,
-    ChatPanel,
+    MainShell,
     ControlCenter,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShellPresentation {
+    #[default]
+    Compact,
+    Expanded,
+    Workspace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostUiCommand {
-    ToggleQuickShell {
+    ToggleMainShell {
         launch_generation: u64,
     },
     ApplyLaunchContext {
         launch_generation: u64,
         snapshot: crate::ContextSnapshot,
     },
-    ShowQuickShell,
-    ShowChatPanel,
+    ShowMainShell,
+    SetMainShellPresentation(ShellPresentation),
     ShowControlCenter,
     RefreshPlugins,
     Quit,

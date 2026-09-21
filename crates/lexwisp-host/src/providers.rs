@@ -204,6 +204,7 @@ impl ProviderService {
         let messages = [AiMessage {
             role: AiRole::User,
             content: "Reply with OK.".into(),
+            attachments: Vec::new(),
         }];
         let output = self
             .ai

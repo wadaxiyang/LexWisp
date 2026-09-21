@@ -6,12 +6,12 @@ use std::{
 use async_channel::{Receiver, Sender, TrySendError};
 use lexwisp_core::{
     ActionDescriptor, ActionError, ActionFuture, ActionHandler, ActionId, ActionRequest,
-    ActionResult, AiMessage, AiRole, AttemptId, Capability, ChatConversationSummary, ChatError,
-    ChatHistoryPort, ChatInvocationRequest, ChatMessageSnapshot, ChatMessageStatus,
-    ChatModelPreference, ChatRunPort, ChatSnapshot, ChatUiPort, ChatUiResultFuture, ConversationId,
-    ExecutionObserver, ExecutionSnapshot, ExecutionStatus, InvocationId, MessageId,
-    PersistedChatConversation, PluginDescriptor, PluginId, QualifiedActionId, StorageState,
-    SurfaceKind,
+    ActionResult, AiMessage, AiRole, AttemptId, Capability, ChatAttachmentContent,
+    ChatConversationSummary, ChatDraft, ChatError, ChatHistoryPort, ChatInvocationRequest,
+    ChatMessageSnapshot, ChatMessageStatus, ChatModelPreference, ChatRunPort, ChatSnapshot,
+    ChatUiPort, ChatUiResultFuture, ConversationId, ExecutionObserver, ExecutionSnapshot,
+    ExecutionStatus, InvocationId, MessageId, PersistedChatConversation, PluginDescriptor,
+    PluginId, QualifiedActionId, StorageState, SurfaceKind,
 };
 
 const ESTIMATED_CHARS_PER_TOKEN: usize = 4;
@@ -244,11 +244,12 @@ impl ChatController {
     fn prepare(
         &self,
         conversation_id: &ConversationId,
-        input: String,
+        draft: ChatDraft,
         regenerate: bool,
     ) -> Result<ChatInvocationRequest, ChatError> {
+        let (input, draft_attachments) = draft.into_parts();
         let input = input.trim().to_owned();
-        if input.is_empty() {
+        if input.is_empty() && draft_attachments.is_empty() {
             return Err(ChatError::EmptyInput);
         }
         let mut state = self
@@ -274,6 +275,7 @@ impl ChatController {
                 id: id.clone(),
                 is_user: true,
                 content: input.clone(),
+                attachments: Arc::new(draft_attachments),
                 status: ChatMessageStatus::Submitted,
                 ordinal,
                 attempt_id: None,
@@ -292,6 +294,7 @@ impl ChatController {
             id: assistant_message_id.clone(),
             is_user: false,
             content: String::new(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Generating,
             ordinal: assistant_ordinal,
             attempt_id: Some(attempt_id.clone()),
@@ -307,7 +310,17 @@ impl ChatController {
             assemble_context(&proposed, &user_message_id, context_budget)?;
 
         if conversation.messages.is_empty() && !regenerate {
-            conversation.title = input.chars().take(48).collect();
+            conversation.title = if input.is_empty() {
+                proposed
+                    .iter()
+                    .rev()
+                    .find(|message| message.is_user)
+                    .and_then(|message| message.attachments.first())
+                    .map(|attachment| attachment.name().chars().take(48).collect())
+                    .unwrap_or_else(|| "New conversation".into())
+            } else {
+                input.chars().take(48).collect()
+            };
         }
         conversation.messages = Arc::new(proposed);
         conversation.active_assistant = Some(assistant_message_id.clone());
@@ -368,14 +381,14 @@ impl ChatController {
         state.publish();
     }
 
-    async fn execute_input_for(
+    async fn execute_draft_for(
         &self,
         conversation_id: ConversationId,
-        input: String,
+        draft: ChatDraft,
         regenerate: bool,
     ) -> Result<ActionResult, ActionError> {
         let request = self
-            .prepare(&conversation_id, input, regenerate)
+            .prepare(&conversation_id, draft, regenerate)
             .map_err(|error| ActionError::Failed(error.to_string()))?;
         let assistant_id = request.assistant_message_id.clone();
         let observer: Arc<dyn ExecutionObserver> = Arc::new(ChatExecutionObserver {
@@ -407,7 +420,11 @@ impl ActionHandler for ChatController {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active_conversation
             .clone();
-        Box::pin(self.execute_input_for(conversation_id, request.input, false))
+        Box::pin(self.execute_draft_for(
+            conversation_id,
+            ChatDraft::text_only(request.input),
+            false,
+        ))
     }
 }
 
@@ -564,7 +581,7 @@ impl ChatUiPort for ChatController {
         Ok(())
     }
 
-    fn send(&self, input: String) -> ChatUiResultFuture<'_> {
+    fn send_draft(&self, draft: ChatDraft) -> ChatUiResultFuture<'_> {
         let conversation_id = self
             .state
             .lock()
@@ -572,7 +589,7 @@ impl ChatUiPort for ChatController {
             .active_conversation
             .clone();
         Box::pin(async move {
-            self.execute_input_for(conversation_id, input, false)
+            self.execute_draft_for(conversation_id, draft, false)
                 .await
                 .map(|_| ())
                 .map_err(|error| ChatError::Failed(error.to_string()))
@@ -597,7 +614,7 @@ impl ChatUiPort for ChatController {
     }
 
     fn retry(&self) -> ChatUiResultFuture<'_> {
-        let (conversation_id, input) = {
+        let (conversation_id, draft) = {
             let state = self
                 .state
                 .lock()
@@ -609,15 +626,20 @@ impl ChatUiPort for ChatController {
             match conversation {
                 Ok(conversation) => (
                     Ok(conversation.id.clone()),
-                    last_user_message(conversation).map(|message| message.content.clone()),
+                    last_user_message(conversation).map(|message| {
+                        ChatDraft::new(
+                            message.content.clone(),
+                            message.attachments.as_ref().clone(),
+                        )
+                    }),
                 ),
                 Err(error) => (Err(error), None),
             }
         };
         Box::pin(async move {
             let conversation_id = conversation_id?;
-            let input = input.ok_or(ChatError::NothingToRetry)?;
-            self.execute_input_for(conversation_id, input, true)
+            let draft = draft.ok_or(ChatError::NothingToRetry)?;
+            self.execute_draft_for(conversation_id, draft, true)
                 .await
                 .map(|_| ())
                 .map_err(|error| ChatError::Failed(error.to_string()))
@@ -731,6 +753,7 @@ fn assemble_context(
         let mut round = vec![AiMessage {
             role: AiRole::User,
             content: user.content.clone(),
+            attachments: user.attachments.as_ref().clone(),
         }];
         let latest_complete = messages
             .iter()
@@ -744,6 +767,7 @@ fn assemble_context(
             round.push(AiMessage {
                 role: AiRole::Assistant,
                 content: assistant.content.clone(),
+                attachments: Vec::new(),
             });
         }
         rounds.push(round);
@@ -755,12 +779,7 @@ fn assemble_context(
     let budget_chars = context_budget_tokens.saturating_mul(ESTIMATED_CHARS_PER_TOKEN);
     let current_chars = rounds
         .last()
-        .map(|round| {
-            round
-                .iter()
-                .map(|message| message.content.chars().count())
-                .sum()
-        })
+        .map(|round| round.iter().map(estimated_message_chars).sum())
         .unwrap_or(0);
     if current_chars > budget_chars {
         return Err(ChatError::ContextBudgetExceeded);
@@ -769,7 +788,7 @@ fn assemble_context(
     while rounds
         .iter()
         .flatten()
-        .map(|message| message.content.chars().count())
+        .map(estimated_message_chars)
         .sum::<usize>()
         > budget_chars
         && rounds.len() > 1
@@ -778,6 +797,18 @@ fn assemble_context(
         removed += 1;
     }
     Ok((rounds.into_iter().flatten().collect(), removed))
+}
+
+fn estimated_message_chars(message: &AiMessage) -> usize {
+    message.content.chars().count()
+        + message
+            .attachments
+            .iter()
+            .map(|attachment| match attachment.content() {
+                ChatAttachmentContent::Text { text } => text.chars().count(),
+                ChatAttachmentContent::Image { .. } => 4_096,
+            })
+            .sum::<usize>()
 }
 
 #[cfg(test)]
@@ -896,10 +927,10 @@ mod tests {
         let controller = controller();
         let first = controller.snapshot().conversation_id;
         controller
-            .prepare(&first, "first request".into(), false)
+            .prepare(&first, ChatDraft::text_only("first request"), false)
             .expect("first conversation prepares");
         assert!(matches!(
-            controller.prepare(&first, "competing request".into(), false),
+            controller.prepare(&first, ChatDraft::text_only("competing request"), false,),
             Err(ChatError::Busy)
         ));
 
@@ -907,7 +938,7 @@ mod tests {
             .create_conversation()
             .expect("second conversation");
         controller
-            .prepare(&second, "independent request".into(), false)
+            .prepare(&second, ChatDraft::text_only("independent request"), false)
             .expect("another conversation prepares independently");
     }
 
@@ -917,6 +948,7 @@ mod tests {
             id: MessageId::new(),
             is_user: true,
             content: "question".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Submitted,
             ordinal: 0,
             attempt_id: None,
@@ -926,6 +958,7 @@ mod tests {
             id: MessageId::new(),
             is_user: false,
             content: "partial answer".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::CancelledPartial,
             ordinal: 1,
             attempt_id: Some(AttemptId::new()),
@@ -935,6 +968,7 @@ mod tests {
             id: MessageId::new(),
             is_user: true,
             content: "next question".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Submitted,
             ordinal: 2,
             attempt_id: None,
@@ -952,6 +986,7 @@ mod tests {
             id: MessageId::new(),
             is_user: true,
             content: "old".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Submitted,
             ordinal: 0,
             attempt_id: None,
@@ -961,6 +996,7 @@ mod tests {
             id: MessageId::new(),
             is_user: false,
             content: "answer".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Completed,
             ordinal: 1,
             attempt_id: Some(AttemptId::new()),
@@ -970,6 +1006,7 @@ mod tests {
             id: MessageId::new(),
             is_user: true,
             content: "current".into(),
+            attachments: Arc::new(Vec::new()),
             status: ChatMessageStatus::Submitted,
             ordinal: 2,
             attempt_id: None,
@@ -991,7 +1028,7 @@ mod tests {
     #[test]
     fn bounded_subscriber_recovers_to_the_latest_snapshot() {
         let controller = controller();
-        controller.set_surface_visible(SurfaceKind::ChatPanel, true);
+        controller.set_surface_visible(SurfaceKind::MainShell, true);
         let receiver = controller.subscribe(1);
         controller
             .create_conversation()

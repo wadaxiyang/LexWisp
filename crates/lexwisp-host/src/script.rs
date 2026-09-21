@@ -314,7 +314,7 @@ impl ScriptInvocation for BoundScriptInvocation {
     fn show_result(&self) -> Result<(), String> {
         self.authorize_live()?;
         self.ui_commands
-            .try_send(HostUiCommand::ShowQuickShell)
+            .try_send(HostUiCommand::ShowMainShell)
             .map_err(|error| error.to_string())
     }
 

@@ -1795,6 +1795,7 @@ fn load_conversations(
                     id: MessageId::parse(id).map_err(StorageError::Sql)?,
                     is_user: role == "user",
                     content,
+                    attachments: Arc::new(Vec::new()),
                     status: ChatMessageStatus::from_persistence_name(&status)
                         .unwrap_or(ChatMessageStatus::FailedPartial),
                     ordinal: ordinal

@@ -18,10 +18,11 @@ pub use ai::{
     TextInvocationRequest, TextRunFuture, TextRunPort,
 };
 pub use chat::{
-    ChatConversationSummary, ChatError, ChatHistoryPort, ChatMessageSnapshot, ChatMessageStatus,
-    ChatModelPreference, ChatSnapshot, ChatUiPort, ChatUiResultFuture, PersistedChatConversation,
+    ChatAttachment, ChatAttachmentContent, ChatConversationSummary, ChatDraft, ChatError,
+    ChatHistoryPort, ChatMessageSnapshot, ChatMessageStatus, ChatModelPreference, ChatSnapshot,
+    ChatUiPort, ChatUiResultFuture, PersistedChatConversation,
 };
-pub use command::{HostUiCommand, SurfaceKind};
+pub use command::{HostUiCommand, ShellPresentation, SurfaceKind};
 pub use context::{
     CaptureStatus, ContextError, ContextFuture, ContextSnapshot, ContextUiPort, InputSource,
     ReplaceOutcome,

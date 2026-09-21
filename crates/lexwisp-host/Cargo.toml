@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 async-channel.workspace = true
+base64.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 lexwisp-core.workspace = true

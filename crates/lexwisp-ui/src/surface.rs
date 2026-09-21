@@ -2,22 +2,26 @@ use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::{
-    AnyView, App, AppContext, Bounds, Context, DisplayId, IntoElement, ParentElement, Pixels,
-    Render, Size, Styled, Subscription, Task, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowId, WindowOptions, div, px, size,
+    AnyView, App, AppContext, Bounds, Context, DisplayId, Entity, IntoElement, ParentElement,
+    Pixels, Render, Size, Styled, Subscription, Task, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowId, WindowOptions, div, point, px, size,
 };
 use lexwisp_core::{
     ActionDescriptor, CaptureStatus, ChatUiPort, ContextSnapshot, HistoryUiPort,
-    PluginManagementUiPort, ProviderUiPort, SettingsUiPort, SurfaceKind, TextActionUiPort,
+    PluginManagementUiPort, ProviderUiPort, SettingsUiPort, ShellPresentation, SurfaceKind,
     ThemePreference,
 };
 
 use crate::control_center::ControlCenter;
 
+const WINDOW_MARGIN: f32 = 24.;
+const WINDOW_TRANSITION_FRAME: Duration = Duration::from_millis(16);
+
 pub trait SurfaceWindowPlatform {
     fn active_display_id(&self) -> Option<u64>;
     fn hide(&self, window: &Window) -> Result<(), String>;
     fn show(&self, window: &Window) -> Result<(), String>;
+    fn set_bounds(&self, window: &Window, bounds: Bounds<Pixels>) -> Result<(), String>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,10 +32,12 @@ enum SurfaceState {
 
 struct WindowEntry {
     handle: WindowHandle<Root>,
+    session: Option<Entity<ShellSession>>,
     state: SurfaceState,
     generation: u64,
     warm_token: u64,
     warm_expiry: Option<Task<()>>,
+    bounds_transition: Option<Task<()>>,
 }
 
 #[derive(Default)]
@@ -94,6 +100,45 @@ impl LaunchContextState {
     }
 }
 
+pub struct ShellSession {
+    presentation: ShellPresentation,
+    launch_context: ContextSnapshot,
+}
+
+impl ShellSession {
+    fn new() -> Self {
+        Self {
+            presentation: ShellPresentation::Compact,
+            launch_context: ContextSnapshot::empty(
+                CaptureStatus::NoSelection,
+                "No selection attached",
+            ),
+        }
+    }
+
+    pub const fn presentation(&self) -> ShellPresentation {
+        self.presentation
+    }
+
+    pub const fn launch_context(&self) -> &ContextSnapshot {
+        &self.launch_context
+    }
+
+    fn set_presentation(&mut self, presentation: ShellPresentation, cx: &mut Context<Self>) {
+        if self.presentation != presentation {
+            self.presentation = presentation;
+            cx.notify();
+        }
+    }
+
+    fn set_launch_context(&mut self, snapshot: ContextSnapshot, cx: &mut Context<Self>) {
+        if self.launch_context != snapshot {
+            self.launch_context = snapshot;
+            cx.notify();
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct WindowRegistry {
     entries: HashMap<SurfaceKind, WindowEntry>,
@@ -120,13 +165,9 @@ pub struct SurfaceController {
     chat: Arc<dyn ChatUiPort>,
     history: Arc<dyn HistoryUiPort>,
     plugin_management: Arc<dyn PluginManagementUiPort>,
-    text_actions: Vec<Arc<dyn TextActionUiPort>>,
-    launches: async_channel::Sender<ContextSnapshot>,
-    stale_launches: async_channel::Receiver<ContextSnapshot>,
     launch_contexts: LaunchContextState,
     action_descriptors: Vec<ActionDescriptor>,
-    quick_shell_factory: QuickShellViewFactory,
-    chat_panel_factory: ChatPanelViewFactory,
+    shell_content_factory: ShellContentViewFactory,
     registry: WindowRegistry,
 }
 
@@ -136,7 +177,6 @@ pub struct SurfaceServices {
     chat: Arc<dyn ChatUiPort>,
     history: Arc<dyn HistoryUiPort>,
     plugin_management: Arc<dyn PluginManagementUiPort>,
-    text_actions: Vec<Arc<dyn TextActionUiPort>>,
     action_descriptors: Vec<ActionDescriptor>,
 }
 
@@ -147,7 +187,6 @@ impl SurfaceServices {
         chat: Arc<dyn ChatUiPort>,
         history: Arc<dyn HistoryUiPort>,
         plugin_management: Arc<dyn PluginManagementUiPort>,
-        text_actions: Vec<Arc<dyn TextActionUiPort>>,
         action_descriptors: Vec<ActionDescriptor>,
     ) -> Self {
         Self {
@@ -156,26 +195,21 @@ impl SurfaceServices {
             chat,
             history,
             plugin_management,
-            text_actions,
             action_descriptors,
         }
     }
 }
 
-pub type QuickShellViewFactory =
-    Rc<dyn Fn(WeakEntity<SurfaceController>, &mut Window, &mut App) -> AnyView>;
-pub type ChatPanelViewFactory =
-    Rc<dyn Fn(WeakEntity<SurfaceController>, &mut Window, &mut App) -> AnyView>;
+pub type ShellContentViewFactory = Rc<
+    dyn Fn(WeakEntity<SurfaceController>, Entity<ShellSession>, &mut Window, &mut App) -> AnyView,
+>;
 pub type SurfaceFactory = SurfaceController;
 
 impl SurfaceController {
     pub fn new(
         platform: Rc<dyn SurfaceWindowPlatform>,
         services: SurfaceServices,
-        launches: async_channel::Sender<ContextSnapshot>,
-        stale_launches: async_channel::Receiver<ContextSnapshot>,
-        quick_shell_factory: QuickShellViewFactory,
-        chat_panel_factory: ChatPanelViewFactory,
+        shell_content_factory: ShellContentViewFactory,
     ) -> Self {
         Self {
             platform,
@@ -184,22 +218,19 @@ impl SurfaceController {
             chat: services.chat,
             history: services.history,
             plugin_management: services.plugin_management,
-            text_actions: services.text_actions,
-            launches,
-            stale_launches,
             launch_contexts: LaunchContextState::default(),
             action_descriptors: services.action_descriptors,
-            quick_shell_factory,
-            chat_panel_factory,
+            shell_content_factory,
             registry: WindowRegistry::default(),
         }
     }
 
-    pub fn show_quick_shell(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        self.show(SurfaceKind::QuickShell, cx)
+    pub fn show_main_shell(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        self.prepare_main_shell(ShellPresentation::Compact, None, cx);
+        self.show(SurfaceKind::MainShell, cx)
     }
 
-    pub fn toggle_quick_shell(
+    pub fn toggle_main_shell(
         &mut self,
         launch_generation: u64,
         cx: &mut Context<Self>,
@@ -211,158 +242,172 @@ impl SurfaceController {
         if self
             .registry
             .entries
-            .get(&SurfaceKind::QuickShell)
+            .get(&SurfaceKind::MainShell)
             .is_some_and(|entry| entry.state == SurfaceState::Visible)
         {
-            if let Some(handle) = self
-                .registry
-                .entries
-                .get(&SurfaceKind::QuickShell)
-                .map(|entry| entry.handle)
-            {
-                let platform = self.platform.clone();
-                handle.update(cx, move |_, window, _| {
-                    platform.hide(window).map_err(anyhow::Error::msg)
-                })??;
-                self.begin_warm_retention(cx);
-            }
-            Ok(())
-        } else {
-            self.send_latest_launch(pending.unwrap_or_else(|| {
-                ContextSnapshot::empty(
-                    CaptureStatus::NoSelection,
-                    "Checking the foreground selection…",
-                )
-            }))?;
-            self.show_quick_shell(cx)
+            return self.hide_main_shell(cx);
         }
+
+        let context = pending.unwrap_or_else(|| {
+            ContextSnapshot::empty(
+                CaptureStatus::NoSelection,
+                "Checking the foreground selection…",
+            )
+        });
+        self.prepare_main_shell(ShellPresentation::Compact, Some(context), cx);
+        self.show(SurfaceKind::MainShell, cx)
     }
 
     pub fn apply_launch_context(
         &mut self,
         launch_generation: u64,
         snapshot: ContextSnapshot,
+        cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let ReceiveLaunch::Current(snapshot) =
             self.launch_contexts.receive(launch_generation, snapshot)
         else {
             return Ok(());
         };
-        if !self
+        let Some(session) = self
             .registry
             .entries
-            .get(&SurfaceKind::QuickShell)
-            .is_some_and(|entry| entry.state == SurfaceState::Visible)
-        {
+            .get(&SurfaceKind::MainShell)
+            .filter(|entry| entry.state == SurfaceState::Visible)
+            .and_then(|entry| entry.session.clone())
+        else {
             return Ok(());
-        }
-        self.send_latest_launch(snapshot)
+        };
+        session.update(cx, |session, cx| session.set_launch_context(snapshot, cx));
+        Ok(())
     }
 
-    fn send_latest_launch(&self, snapshot: ContextSnapshot) -> anyhow::Result<()> {
-        match self.launches.try_send(snapshot) {
-            Ok(()) => Ok(()),
-            Err(async_channel::TrySendError::Closed(_)) => {
-                Err(anyhow::anyhow!("Quick Shell launch channel is closed"))
-            }
-            Err(async_channel::TrySendError::Full(snapshot)) => {
-                let _ = self.stale_launches.try_recv();
-                self.launches
-                    .try_send(snapshot)
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))
-            }
+    pub fn set_main_shell_presentation(
+        &mut self,
+        presentation: ShellPresentation,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if !self.registry.entries.contains_key(&SurfaceKind::MainShell) {
+            self.show(SurfaceKind::MainShell, cx)?;
         }
+        let Some((handle, session)) = self
+            .registry
+            .entries
+            .get(&SurfaceKind::MainShell)
+            .and_then(|entry| entry.session.clone().map(|session| (entry.handle, session)))
+        else {
+            return Err(anyhow::anyhow!("Main Shell session is unavailable"));
+        };
+        session.update(cx, |session, cx| session.set_presentation(presentation, cx));
+        let (start, target) = handle.update(cx, move |_, window, cx| {
+            let target = presentation_bounds(presentation, window, cx);
+            window.set_window_title(match presentation {
+                ShellPresentation::Compact => "LexWisp",
+                ShellPresentation::Expanded => "LexWisp · Conversation",
+                ShellPresentation::Workspace => "LexWisp · Workspace",
+            });
+            (window.bounds(), target)
+        })?;
+
+        let steps = if presentation == ShellPresentation::Workspace {
+            12
+        } else {
+            10
+        };
+        let platform = self.platform.clone();
+        let transition = cx.spawn(async move |_, cx| {
+            for step in 1..=steps {
+                cx.background_executor()
+                    .timer(WINDOW_TRANSITION_FRAME)
+                    .await;
+                let progress = step as f32 / steps as f32;
+                let bounds = interpolate_bounds(start, target, ease_out_cubic(progress));
+                if !matches!(
+                    handle.update(cx, |_, window, _| platform.set_bounds(window, bounds)),
+                    Ok(Ok(()))
+                ) {
+                    break;
+                }
+            }
+        });
+        if let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::MainShell) {
+            entry.bounds_transition = Some(transition);
+        }
+        Ok(())
     }
 
     pub fn show_control_center(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         self.show(SurfaceKind::ControlCenter, cx)
     }
 
-    pub fn refresh_plugins(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.registry.entries.remove(&SurfaceKind::QuickShell) {
-            self.chat
-                .set_surface_visible(SurfaceKind::QuickShell, false);
-            for action in self.all_text_actions() {
-                action.set_surface_visible(false);
-            }
-            let handle = entry.handle;
-            cx.defer(move |cx| {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
-            });
-        }
+    pub fn refresh_plugins(&mut self, _: &mut Context<Self>) {
+        // Main Shell hosts only the compiled Chat experience. Installed text/script plugins
+        // remain available to Host and Control Center without rebuilding this window.
     }
 
-    fn all_text_actions(&self) -> Vec<Arc<dyn TextActionUiPort>> {
-        let mut actions = self.text_actions.clone();
-        actions.extend(self.plugin_management.action_snapshot().controllers);
-        actions
+    pub fn hide_main_shell_from_view(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.hide_main_shell(cx);
     }
 
-    pub fn handoff_to_chat_panel(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        // Attach the destination observer before the popup is detached so an in-flight
-        // invocation always has a visible projection throughout the handoff.
-        self.show(SurfaceKind::ChatPanel, cx)?;
-        let handle = self
+    fn prepare_main_shell(
+        &mut self,
+        presentation: ShellPresentation,
+        context: Option<ContextSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self
             .registry
             .entries
-            .get(&SurfaceKind::QuickShell)
-            .filter(|entry| entry.state == SurfaceState::Visible)
-            .map(|entry| entry.handle);
-        if let Some(handle) = handle {
-            let platform = self.platform.clone();
-            handle.update(cx, move |_, window, _| {
-                platform.hide(window).map_err(anyhow::Error::msg)
-            })??;
-            self.begin_warm_retention(cx);
-        }
+            .get(&SurfaceKind::MainShell)
+            .and_then(|entry| entry.session.clone())
+        else {
+            return;
+        };
+        session.update(cx, |session, cx| {
+            session.set_presentation(presentation, cx);
+            if let Some(context) = context {
+                session.set_launch_context(context, cx);
+            }
+        });
+    }
+
+    fn hide_main_shell(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let Some(handle) = self
+            .registry
+            .entries
+            .get_mut(&SurfaceKind::MainShell)
+            .map(|entry| {
+                entry.bounds_transition = None;
+                entry.handle
+            })
+        else {
+            return Ok(());
+        };
+        let platform = self.platform.clone();
+        handle.update(cx, move |_, window, _| {
+            platform.hide(window).map_err(anyhow::Error::msg)
+        })??;
+        self.begin_warm_retention(cx);
         Ok(())
     }
 
-    pub fn close_chat_panel(&mut self, window: &mut Window, _: &mut Context<Self>) {
-        self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
-        self.registry.entries.remove(&SurfaceKind::ChatPanel);
-        window.remove_window();
-    }
-
-    fn close_chat_panel_if_generation(
+    fn hide_main_shell_if_generation(
         &mut self,
         generation: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.is_current_generation(SurfaceKind::ChatPanel, generation) {
+        if !self.is_current_generation(SurfaceKind::MainShell, generation) {
             window.remove_window();
             return;
         }
-        self.close_chat_panel(window, cx);
-    }
-
-    pub fn hide_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.hide_current_quick_shell(window, cx);
-    }
-
-    fn hide_quick_shell_if_generation(
-        &mut self,
-        generation: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.is_current_generation(SurfaceKind::QuickShell, generation) {
-            window.remove_window();
-            return;
+        if let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::MainShell) {
+            entry.bounds_transition = None;
         }
-        self.hide_current_quick_shell(window, cx);
-    }
-
-    fn hide_current_quick_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat
-            .set_surface_visible(SurfaceKind::QuickShell, false);
-        for action in self.all_text_actions() {
-            action.set_surface_visible(false);
-        }
+        self.chat.set_surface_visible(SurfaceKind::MainShell, false);
         if self.platform.hide(window).is_err() {
             window.remove_window();
-            self.registry.entries.remove(&SurfaceKind::QuickShell);
+            self.registry.entries.remove(&SurfaceKind::MainShell);
             return;
         }
         self.begin_warm_retention(cx);
@@ -376,13 +421,9 @@ impl SurfaceController {
     }
 
     fn begin_warm_retention(&mut self, cx: &mut Context<Self>) {
-        self.chat
-            .set_surface_visible(SurfaceKind::QuickShell, false);
-        for action in self.all_text_actions() {
-            action.set_surface_visible(false);
-        }
+        self.chat.set_surface_visible(SurfaceKind::MainShell, false);
         let warm_token = self.registry.allocate_warm_token();
-        let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::QuickShell) else {
+        let Some(entry) = self.registry.entries.get_mut(&SurfaceKind::MainShell) else {
             return;
         };
         entry.state = SurfaceState::HiddenWarm;
@@ -399,7 +440,7 @@ impl SurfaceController {
             timer.await;
             let handle = controller
                 .update(cx, |controller, _| {
-                    controller.take_warm_quick_shell(warm_token)
+                    controller.take_warm_main_shell(warm_token)
                 })
                 .ok()
                 .flatten();
@@ -421,14 +462,8 @@ impl SurfaceController {
             .filter_map(|(kind, entry)| (entry.handle.window_id() == id).then_some(*kind))
             .collect::<Vec<_>>();
         for kind in closed {
-            if kind == SurfaceKind::QuickShell {
-                self.chat
-                    .set_surface_visible(SurfaceKind::QuickShell, false);
-                for action in self.all_text_actions() {
-                    action.set_surface_visible(false);
-                }
-            } else if kind == SurfaceKind::ChatPanel {
-                self.chat.set_surface_visible(SurfaceKind::ChatPanel, false);
+            if kind == SurfaceKind::MainShell {
+                self.chat.set_surface_visible(SurfaceKind::MainShell, false);
             }
         }
         self.registry
@@ -439,23 +474,28 @@ impl SurfaceController {
     fn show(&mut self, kind: SurfaceKind, cx: &mut Context<Self>) -> anyhow::Result<()> {
         if let Some(entry) = self.registry.entries.get_mut(&kind) {
             entry.warm_expiry = None;
+            entry.bounds_transition = None;
             entry.state = SurfaceState::Visible;
             let platform = self.platform.clone();
             let preference = self.settings.snapshot().settings().theme();
-            let shown = entry.handle.update(cx, |_, window, cx| {
+            let presentation = entry
+                .session
+                .as_ref()
+                .map(|session| session.read(cx).presentation());
+            let shown = entry.handle.update(cx, move |_, window, cx| {
                 apply_theme(preference, window, cx);
+                if let Some(presentation) = presentation {
+                    platform
+                        .set_bounds(window, presentation_bounds(presentation, window, cx))
+                        .map_err(anyhow::Error::msg)?;
+                }
                 platform.show(window).map_err(anyhow::Error::msg)?;
                 window.activate_window();
                 Ok::<(), anyhow::Error>(())
             });
             if matches!(shown, Ok(Ok(()))) {
-                if kind == SurfaceKind::QuickShell {
-                    self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
-                    for action in self.all_text_actions() {
-                        action.set_surface_visible(true);
-                    }
-                } else if kind == SurfaceKind::ChatPanel {
-                    self.chat.set_surface_visible(SurfaceKind::ChatPanel, true);
+                if kind == SurfaceKind::MainShell {
+                    self.chat.set_surface_visible(SurfaceKind::MainShell, true);
                 }
                 return Ok(());
             }
@@ -469,33 +509,33 @@ impl SurfaceController {
         let action_descriptors = self.action_descriptors.clone();
         let history = self.history.clone();
         let plugin_management = self.plugin_management.clone();
-        let quick_shell_factory = self.quick_shell_factory.clone();
-        let chat_panel_factory = self.chat_panel_factory.clone();
+        let shell_content_factory = self.shell_content_factory.clone();
         let preference = settings.snapshot().settings().theme();
         let display_id = self.platform.active_display_id().map(DisplayId::new);
         let options = build_window_options(kind, display_id, cx);
+        let created_session =
+            (kind == SurfaceKind::MainShell).then(|| cx.new(|_| ShellSession::new()));
+        let session_for_window = created_session.clone();
         let handle = cx.open_window(options, move |window, cx| {
             apply_theme(preference, window, cx);
-            if kind == SurfaceKind::QuickShell {
+            if kind == SurfaceKind::MainShell {
                 let controller_for_close = controller.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     let _ = controller_for_close.update(cx, |controller, cx| {
-                        controller.hide_quick_shell_if_generation(generation, window, cx);
-                    });
-                    false
-                });
-            } else if kind == SurfaceKind::ChatPanel {
-                let controller_for_close = controller.clone();
-                window.on_window_should_close(cx, move |window, cx| {
-                    let _ = controller_for_close.update(cx, |controller, cx| {
-                        controller.close_chat_panel_if_generation(generation, window, cx);
+                        controller.hide_main_shell_if_generation(generation, window, cx);
                     });
                     false
                 });
             }
             let content: AnyView = match kind {
-                SurfaceKind::QuickShell => quick_shell_factory(controller.clone(), window, cx),
-                SurfaceKind::ChatPanel => chat_panel_factory(controller.clone(), window, cx),
+                SurfaceKind::MainShell => shell_content_factory(
+                    controller.clone(),
+                    session_for_window
+                        .clone()
+                        .expect("Main Shell always has a session"),
+                    window,
+                    cx,
+                ),
                 SurfaceKind::ControlCenter => cx
                     .new(|cx| {
                         ControlCenter::new(
@@ -518,38 +558,32 @@ impl SurfaceController {
             kind,
             WindowEntry {
                 handle,
+                session: created_session,
                 state: SurfaceState::Visible,
                 generation,
                 warm_token: 0,
                 warm_expiry: None,
+                bounds_transition: None,
             },
         );
-        if kind == SurfaceKind::QuickShell {
-            self.chat.set_surface_visible(SurfaceKind::QuickShell, true);
-            for action in self.all_text_actions() {
-                action.set_surface_visible(true);
-            }
-        } else if kind == SurfaceKind::ChatPanel {
-            self.chat.set_surface_visible(SurfaceKind::ChatPanel, true);
+        if kind == SurfaceKind::MainShell {
+            self.chat.set_surface_visible(SurfaceKind::MainShell, true);
         }
         Ok(())
     }
 
-    fn take_warm_quick_shell(&mut self, warm_token: u64) -> Option<WindowHandle<Root>> {
+    fn take_warm_main_shell(&mut self, warm_token: u64) -> Option<WindowHandle<Root>> {
         let should_destroy = self
             .registry
             .entries
-            .get(&SurfaceKind::QuickShell)
+            .get(&SurfaceKind::MainShell)
             .is_some_and(|entry| {
                 entry.state == SurfaceState::HiddenWarm && entry.warm_token == warm_token
             });
         if !should_destroy {
             return None;
         }
-        if let Some(mut entry) = self.registry.entries.remove(&SurfaceKind::QuickShell) {
-            // This callback is running inside the retained warm-expiry task. Detach that now-ready
-            // handle before dropping the entry so removal cannot cancel the task that is currently
-            // unwinding its own future.
+        if let Some(mut entry) = self.registry.entries.remove(&SurfaceKind::MainShell) {
             if let Some(task) = entry.warm_expiry.take() {
                 task.detach();
             }
@@ -566,15 +600,10 @@ fn build_window_options(
     cx: &App,
 ) -> WindowOptions {
     let (title, dimensions, minimum) = match kind {
-        SurfaceKind::QuickShell => (
-            "LexWisp · Quick Shell",
-            size(px(720.), px(640.)),
-            size(px(560.), px(480.)),
-        ),
-        SurfaceKind::ChatPanel => (
-            "LexWisp · Chat",
-            size(px(1120.), px(760.)),
-            size(px(760.), px(560.)),
+        SurfaceKind::MainShell => (
+            "LexWisp",
+            presentation_size(ShellPresentation::Compact),
+            size(px(560.), px(160.)),
         ),
         SurfaceKind::ControlCenter => (
             "LexWisp · Settings",
@@ -598,6 +627,76 @@ fn build_window_options(
         app_id: Some("org.lexwisp.LexWisp".into()),
         ..Default::default()
     }
+}
+
+fn presentation_size(presentation: ShellPresentation) -> Size<Pixels> {
+    match presentation {
+        ShellPresentation::Compact => size(px(680.), px(190.)),
+        ShellPresentation::Expanded => size(px(680.), px(640.)),
+        ShellPresentation::Workspace => size(px(1180.), px(780.)),
+    }
+}
+
+fn presentation_bounds(
+    presentation: ShellPresentation,
+    window: &Window,
+    cx: &App,
+) -> Bounds<Pixels> {
+    let current = window.bounds();
+    let work_area = window
+        .display(cx)
+        .map(|display| display.visible_bounds())
+        .unwrap_or(current);
+    let desired = presentation_size(presentation);
+    let width = desired
+        .width
+        .as_f32()
+        .min((work_area.size.width.as_f32() - WINDOW_MARGIN * 2.).max(560.));
+    let height = desired
+        .height
+        .as_f32()
+        .min((work_area.size.height.as_f32() - WINDOW_MARGIN * 2.).max(160.));
+    let work_left = work_area.origin.x.as_f32();
+    let work_top = work_area.origin.y.as_f32();
+    let work_right = work_left + work_area.size.width.as_f32();
+    let work_bottom = work_top + work_area.size.height.as_f32();
+    let current_center_x = current.origin.x.as_f32() + current.size.width.as_f32() / 2.;
+    let current_center_y = current.origin.y.as_f32() + current.size.height.as_f32() / 2.;
+    let preferred_x = if presentation == ShellPresentation::Workspace {
+        current.origin.x.as_f32() + current.size.width.as_f32() - width
+    } else {
+        current_center_x - width / 2.
+    };
+    let preferred_y = current_center_y - height / 2.;
+    let x = preferred_x.clamp(work_left, (work_right - width).max(work_left));
+    let y = preferred_y.clamp(work_top, (work_bottom - height).max(work_top));
+    Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+}
+
+fn ease_out_cubic(progress: f32) -> f32 {
+    let remaining = 1. - progress.clamp(0., 1.);
+    1. - remaining * remaining * remaining
+}
+
+fn interpolate_bounds(
+    start: Bounds<Pixels>,
+    target: Bounds<Pixels>,
+    progress: f32,
+) -> Bounds<Pixels> {
+    let progress = progress.clamp(0., 1.);
+    let interpolate = |start: Pixels, target: Pixels| {
+        px(start.as_f32() + (target.as_f32() - start.as_f32()) * progress)
+    };
+    Bounds::new(
+        point(
+            interpolate(start.origin.x, target.origin.x),
+            interpolate(start.origin.y, target.origin.y),
+        ),
+        size(
+            interpolate(start.size.width, target.size.width),
+            interpolate(start.size.height, target.size.height),
+        ),
+    )
 }
 
 fn centered_in_work_area(work_area: Bounds<Pixels>, dimensions: Size<Pixels>) -> Bounds<Pixels> {
@@ -664,9 +763,23 @@ mod tests {
     #[test]
     fn placement_preserves_negative_monitor_coordinates() {
         let work_area = bounds(point(px(-1920.), px(40.)), size(px(1920.), px(1040.)));
-        let placed = centered_in_work_area(work_area, size(px(720.), px(640.)));
-        assert_eq!(placed.origin, point(px(-1320.), px(240.)));
-        assert_eq!(placed.size, size(px(720.), px(640.)));
+        let placed = centered_in_work_area(work_area, size(px(680.), px(190.)));
+        assert_eq!(placed.origin, point(px(-1300.), px(465.)));
+        assert_eq!(placed.size, size(px(680.), px(190.)));
+    }
+
+    #[test]
+    fn window_transition_reaches_the_exact_target() {
+        let start = bounds(point(px(100.), px(200.)), size(px(680.), px(190.)));
+        let target = bounds(point(px(-200.), px(40.)), size(px(1180.), px(780.)));
+        assert_eq!(interpolate_bounds(start, target, 0.), start);
+        assert_eq!(
+            interpolate_bounds(start, target, ease_out_cubic(1.)),
+            target
+        );
+        let midway = interpolate_bounds(start, target, ease_out_cubic(0.5));
+        assert!(midway.origin.x < start.origin.x);
+        assert!(midway.size.width > start.size.width);
     }
 
     #[test]

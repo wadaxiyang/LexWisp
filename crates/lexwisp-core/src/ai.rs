@@ -3,8 +3,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use thiserror::Error;
 
 use crate::{
-    AttemptId, ChatModelPreference, ConversationId, DeclarativeActionDefinition, ExecutionObserver,
-    InvocationId, MessageId, QualifiedActionId,
+    AttemptId, ChatAttachment, ChatModelPreference, ConversationId, DeclarativeActionDefinition,
+    ExecutionObserver, InvocationId, MessageId, QualifiedActionId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +18,7 @@ pub enum AiRole {
 pub struct AiMessage {
     pub role: AiRole,
     pub content: String,
+    pub attachments: Vec<ChatAttachment>,
 }
 
 #[derive(Clone, Debug)]

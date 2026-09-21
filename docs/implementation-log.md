@@ -671,3 +671,57 @@ Runnable directory: `target/package/LexWisp-v0.1.0-windows-x64/`. Archive: `dist
 
 - A physical global-hotkey run with foreground text selection is still required to measure hotkey-to-first-interactive-frame latency and verify UIA/clipboard behavior against real target applications. The process-level smoke and generation/order tests do not substitute for that gate.
 - Alternate IMEs, DPI values, multi-monitor layouts, higher/lower-integrity targets, complex clipboard formats, Explorer restart, Windows 10, clean-machine portability, and prolonged resource/GPU measurements remain pending. No Provider request or paid network call was made.
+
+## Main Shell UI redesign — 2026-09-20
+
+Status: **implemented and packaged; the locked formatting/check/Clippy/test/Release gates passed, the clean staged executable opened the native Control Center and then the Compact Main Shell through single-instance wake, and the process remained responsive. Button-level Compact → Expanded → Workspace, attachment picker/drop, IME, and live-Provider acceptance remain pending because the Windows Computer Use inventory service was unavailable.** No screenshot or interaction result is claimed without that evidence.
+
+### Product and surface changes
+
+- Replaced the separate `QuickShell` and `ChatPanel` native surfaces with one neutral `MainShell` and a retained `ShellSession`. `ShellPresentation::{Compact, Expanded, Workspace}` is presentation state rather than Chat-specific window identity.
+- Compact is now an input-first retained GPUI Kit Composer with verified-selection chip, attachment entry, model popover, status, Stop/Regenerate, and Send. The old action radio row, parameter/result switch, source card, clipboard button, and wide action toolbar are absent.
+- The first Compact Send switches the same window to Expanded before dispatching exactly one `ChatDraft`. Expanded keeps a narrow transcript and the same Composer entity; Workspace reveals a real virtualized conversation sidebar with New chat, switch, rename, delete, Settings, and collapse controls. No second Chat native window or fake Cowork/Search/Library control is created.
+- Window presentation changes reuse the same registry entry, window handle, ShellSession, ChatController, Composer, draft, attachments, and active request. Native bounds use Win32 `SetWindowPos`, stay within the current display's visible work area, preserve negative-coordinate layouts, and expand Workspace primarily leftward. Retained transition tasks apply ease-out bounds animation at approximately 160 ms for Compact/Expanded and 192 ms for Workspace, cancelling an older transition on hide or replacement.
+- The Main Shell keeps the existing HiddenWarm lifecycle. Hotkey and single-instance wake reset a visible/reopened shell to Compact without cancelling Chat; Control Center remains an independent secondary window. Tray language and commands now describe only LexWisp, Settings, and Exit.
+- `ChatExperience` owns one `TextareaState`, one message scroller, one conversation list handle, and retained subscriptions/tasks. Initial construction focuses the Composer; Enter sends, Shift+Enter remains the Kit multiline behavior, and IME candidate confirmation is not mapped to Send.
+- The attachment button and Composer drop zone are functional. Up to eight PNG/JPEG/WebP/GIF images (8 MiB each) or UTF-8 Markdown/text/code files (512 KiB each) are loaded on the background executor, previewed with GPUI Kit Attachment components, removable before Send, and cleared only when a draft is dispatched. Unsupported files and read/UTF-8 failures surface explicit status text.
+- Added `ChatDraft`, `ChatAttachment`, and image/text attachment payloads through the Core Chat/Ai ports. OpenAI-compatible requests serialize images as in-memory `data:` URLs and text attachments as text parts; local file paths are never sent. Context budgeting accounts for attachment content, regeneration retains the live message attachments, and restored legacy rows remain valid with an empty attachment list.
+- Updated the README and Control Center wording to remove the obsolete Quick Shell/Chat Panel product model while retaining installed Declarative/Script registration, grants, execution, persistence, and management infrastructure below the Main Shell.
+
+### Commands and automated evidence
+
+The final Windows x64 commands passed:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Workspace suite: **76 passed, 0 failed, 1 real-global-hotkey fixture ignored by default**.
+- New regression coverage verifies attachment request serialization without local paths, bounded attachment extension policy, presentation interpolation reaching the exact target, negative-coordinate placement, retained warm-window generation, launch-context ordering, and stale launch rejection. Existing Chat coverage continues to exercise independent conversations, stable IDs, bounded latest snapshots, regeneration attempts, whole-round context pruning, and partial-attempt exclusion.
+- Formatting, locked workspace check, and all-target Clippy with warnings denied were rerun after the final bounds animation and focus changes.
+
+### Native staged smoke and measurements
+
+The final executable was launched from `C:\123\CODE\LexWisp\target\package\LexWisp-v0.1.0-windows-x64\LexWisp.exe`. First launch produced a responsive native `LexWisp · Settings` window. A second staged launch exited with code 0 within five seconds and woke the same process into a responsive native `LexWisp` Main Shell window, confirming the packaged single-instance → Compact route. The smoke process was then stopped and `scripts/package.ps1 -SkipBuild` rebuilt clean staging, removing the generated portable `data` directory.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500, 20 logical processors; 34,132,275,200 bytes visible RAM; AppliedDPI 96 |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Visible Settings point sample | Working set 69,451,776 bytes; Private Bytes 86,544,384; 569 handles; 53 threads; responsive |
+| Compact wake point sample | Working set 72,974,336 bytes; Private Bytes 97,329,152; 585 handles; 53 threads; responsive |
+| Release executable | 36,576,256 bytes; SHA-256 `815c964018cca12cf10a6e68aafc7aaff70eadc20f3c2d8c4f95d221b4f6e60e` |
+| Release ZIP | 14,136,124 bytes; SHA-256 `e4c7520caccec33ceb925c2e4e3715afbdf520c755aea1d04b1230143903d7e6` |
+
+Runnable directory: `target/package/LexWisp-v0.1.0-windows-x64/`. Archive: `dist/LexWisp-v0.1.0-windows-x64.zip`, with adjacent matching checksum. Both contain only `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`. No working-set trim was used. Per-process GPU memory was not measured in this smoke and is not inferred from the adapter inventory.
+
+### Pending native acceptance and blocker
+
+The required `gpui-kit`, `gpui-kit-design-guides`, and `computer-use` skills and their task-required references were read before the corresponding work. The Computer Use control plane was retried once after reset; both calls returned an empty application inventory and `Browsers: Error: nodeRepl.fetch request failed`, while its advertised native launch/list-windows methods were unavailable. No unsupported UIA or screenshot workaround was substituted.
+
+Therefore the following remain pending rather than represented as complete: visual/button-level Compact → Expanded → Workspace inspection; proof from the live window that draft text, attachments, focus, and the active conversation survive every morph; native file picker and drag/drop; Escape/overlay hierarchy; Chinese and alternate IMEs; real streamed Send/Stop/Regenerate with a user-authorized Provider; attachment compatibility across actual Provider APIs; 100/125/150/200% DPI; physical multi-monitor and small-work-area layouts; Windows 10; clean-machine portability; prolonged resource trends; and per-process GPU memory. Geometry/state-machine tests and the responsive process smoke support, but do not replace, those native gates.

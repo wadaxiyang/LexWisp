@@ -50,8 +50,7 @@ pub const WM_LEXWISP_WAKE: u32 = WM_APP + 3;
 const HOTKEY_PRIMARY: i32 = 1;
 const HOTKEY_REPLACEMENT: i32 = 2;
 const TRAY_ID: u32 = 1;
-const MENU_QUICK_SHELL: usize = 100;
-const MENU_CHAT_PANEL: usize = 101;
+const MENU_MAIN_SHELL: usize = 100;
 const MENU_SETTINGS: usize = 102;
 const MENU_EXIT: usize = 103;
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -418,7 +417,7 @@ unsafe extern "system" fn window_proc(
                 let launch_generation = state.launch_generation;
                 state
                     .surface_intents
-                    .send(HostUiCommand::ToggleQuickShell { launch_generation });
+                    .send(HostUiCommand::ToggleMainShell { launch_generation });
                 state.context.capture_for_launch(
                     prepared,
                     launch_generation,
@@ -427,7 +426,7 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             WM_LEXWISP_WAKE => {
-                state.surface_intents.send(HostUiCommand::ShowQuickShell);
+                state.surface_intents.send(HostUiCommand::ShowMainShell);
                 return 0;
             }
             WM_COMMAND_QUEUE => {
@@ -441,7 +440,7 @@ unsafe extern "system" fn window_proc(
             WM_TRAY => {
                 match lparam as u32 {
                     WM_LBUTTONUP => {
-                        state.surface_intents.send(HostUiCommand::ShowQuickShell);
+                        state.surface_intents.send(HostUiCommand::ShowMainShell);
                     }
                     WM_RBUTTONUP => show_tray_menu(window, state),
                     _ => {}
@@ -529,12 +528,10 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
         if menu.is_null() {
             return;
         }
-        let quick = wide("Open Quick Shell");
-        let chat = wide("Open Chat");
+        let main_shell = wide("Open LexWisp");
         let settings = wide("Settings");
         let exit = wide("Exit LexWisp");
-        AppendMenuW(menu, MF_STRING, MENU_QUICK_SHELL, quick.as_ptr());
-        AppendMenuW(menu, MF_STRING, MENU_CHAT_PANEL, chat.as_ptr());
+        AppendMenuW(menu, MF_STRING, MENU_MAIN_SHELL, main_shell.as_ptr());
         AppendMenuW(menu, MF_STRING, MENU_SETTINGS, settings.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
@@ -552,11 +549,8 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
         ) as usize;
         DestroyMenu(menu);
         match selected {
-            MENU_QUICK_SHELL => {
-                state.surface_intents.send(HostUiCommand::ShowQuickShell);
-            }
-            MENU_CHAT_PANEL => {
-                state.surface_intents.send(HostUiCommand::ShowChatPanel);
+            MENU_MAIN_SHELL => {
+                state.surface_intents.send(HostUiCommand::ShowMainShell);
             }
             MENU_SETTINGS => {
                 let _ = state.ui_commands.try_send(HostUiCommand::ShowControlCenter);
@@ -644,11 +638,13 @@ mod tests {
             sender,
             stale_receiver: receiver.clone(),
         };
-        assert!(intents.send(HostUiCommand::ShowQuickShell));
-        assert!(intents.send(HostUiCommand::ShowChatPanel));
+        assert!(intents.send(HostUiCommand::ShowMainShell));
+        assert!(intents.send(HostUiCommand::SetMainShellPresentation(
+            lexwisp_core::ShellPresentation::Workspace,
+        )));
         assert_eq!(
             receiver.try_recv().expect("latest intent remains queued"),
-            HostUiCommand::ShowChatPanel
+            HostUiCommand::SetMainShellPresentation(lexwisp_core::ShellPresentation::Workspace,)
         );
     }
 
@@ -660,7 +656,7 @@ mod tests {
             stale_receiver: receiver.clone(),
         };
         drop(receiver);
-        assert!(!intents.send(HostUiCommand::ShowQuickShell));
+        assert!(!intents.send(HostUiCommand::ShowMainShell));
     }
 
     #[test]
