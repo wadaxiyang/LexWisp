@@ -4,6 +4,8 @@
 
 This document is the visual contract for LexWisp. It is not a mood board and it is not a collection of optional suggestions. New UI work should satisfy these rules before local styling is invented.
 
+**UI Lab scope update (September 2026):** `LexWispMainWindow` is now the sole Chat surface in this lab. It opens directly as a 680 × 640 DIP Conversation window with a retained Composer, transcript, and in-window history/switcher. Do not implement the Compact/Prompt state, a presentation morph, or a separate Chat workspace from the historical Shell exploration below. The `chart_main_window` binary remains a separate visual reference, not a second presentation of Chat. This current scope overrides the older multi-presentation examples wherever they conflict.
+
 LexWisp is a **fast native AI workbench**. Its interface should feel compact, precise, calm, and technically capable. The product is allowed to be dense, but never cluttered. Dark mode should read as a restrained graphite workstation. Light mode should read as a crisp, neutral Windows utility with clear white working surfaces and quiet gray navigation.
 
 The same geometry and hierarchy must work in both appearances. Theme changes alter tone, not information architecture.
@@ -32,9 +34,8 @@ Each region should make its next action obvious.
 
 Examples:
 
-- Compact Shell → compose or send
-- Expanded Shell → continue the conversation
-- Workspace Sidebar → switch or create a conversation
+- LexWispMainWindow → continue the conversation or compose a message
+- In-window history/switcher → switch or create a conversation
 - Dialog → confirm or cancel
 
 Secondary actions should use ghost, outline, overflow, context menu, or message-local controls.
@@ -94,7 +95,7 @@ LexWisp targets Windows first.
 
 ---
 
-# 2. Product surface model
+# 2. Historical multi-presentation model (reference only)
 
 LexWisp has one host-owned **Main Shell** and one current **Experience**.
 
@@ -132,7 +133,7 @@ Do not encode Chat-specific names into Shell styling primitives. Future experien
 
 ---
 
-# 3. Main Shell presentations
+# 3. Historical Main Shell presentations (not the current UI Lab target)
 
 ## 3.1 Compact
 
@@ -1109,5 +1110,3 @@ Dark mode is deep, layered, and technical without becoming neon or game-like.
 Light mode is clean, neutral, and fast without becoming sterile or overly macOS-like.
 
 The interface earns complexity only when the user expands into it.
-
-

@@ -54,7 +54,7 @@ fn apply_lexwisp_palette(cx: &mut App) {
         theme.font_size = px(14.0);
         theme.mono_font_size = px(13.0);
 
-        // Compact workbench geometry. Large floating surfaces may refine their
+        // Restrained workbench geometry. Large floating surfaces may refine their
         // own radius, but ordinary controls should stay restrained.
         theme.radius = px(6.0);
         theme.radius_lg = px(10.0);
@@ -113,7 +113,9 @@ fn apply_dark(theme: &mut Theme) {
     theme.ring = primary;
     theme.transparent = ca(0x000000, 0.0);
 
-    theme.sidebar = sidebar;
+    // The shell chrome overlays the platform backdrop. Keep foreground and
+    // interaction states opaque so navigation remains readable.
+    theme.sidebar = ca(0x11141A, 0.82);
     theme.sidebar_foreground = sidebar_foreground;
     theme.sidebar_border = c(0x202630);
     theme.sidebar_accent = c(0x1C222B);
@@ -223,7 +225,7 @@ fn apply_dark(theme: &mut Theme) {
     theme.link_hover = c(0x9AB8F7);
     theme.link_active = primary;
 
-    theme.title_bar = sidebar;
+    theme.title_bar = theme.sidebar;
     theme.title_bar_border = c(0x202630);
     theme.status_bar = sidebar;
     theme.status_bar_border = c(0x202630);
@@ -302,7 +304,8 @@ fn apply_light(theme: &mut Theme) {
     theme.ring = primary;
     theme.transparent = ca(0xFFFFFF, 0.0);
 
-    theme.sidebar = sidebar;
+    // Share one translucent material across the title bar and navigation.
+    theme.sidebar = ca(0xF1F3F6, 0.78);
     theme.sidebar_foreground = sidebar_foreground;
     theme.sidebar_border = c(0xDDE2E8);
     theme.sidebar_accent = c(0xE7EAF0);
@@ -409,7 +412,7 @@ fn apply_light(theme: &mut Theme) {
     theme.link_hover = c(0x3F75E0);
     theme.link_active = c(0x2858BC);
 
-    theme.title_bar = sidebar;
+    theme.title_bar = theme.sidebar;
     theme.title_bar_border = c(0xDDE2E8);
     theme.status_bar = sidebar;
     theme.status_bar_border = c(0xDDE2E8);

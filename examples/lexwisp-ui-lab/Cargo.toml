@@ -6,11 +6,18 @@ rust-version = "1.95.0"
 publish = false
 
 [[bin]]
-name = "quick_start"
-path = "quick_start.rs"
+name = "chart_main_window"
+path = "src/chart_main_window.rs"
+
+[[bin]]
+name = "lexwisp_main_window"
+path = "src/lexwisp_main_window.rs"
 
 [dependencies]
 gpui-kit = "=0.6.1"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.6.1", features = ["test-support"] }
 
 # Keep this lab independent from the parent LexWisp workspace. It owns its
 # dependency lock and can be opened directly as a separate Codex project.

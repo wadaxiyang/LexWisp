@@ -48,22 +48,20 @@ Design structure before decoration:
 
 Use one dominant action per region. Accent is scarce and reserved for the real primary commit, keyboard focus, links, and meaningful progress. Persistent surfaces are flat and quiet; use spacing, alignment, type hierarchy, and one structural divider before adding a card, border, color, or shadow.
 
-The Shell model is neutral and reusable:
+The current Chat surface is one main window:
 
 ```text
-Main Shell
-├── Compact
-├── Expanded
-└── Workspace
-
-Current Experience
-└── Chat
+LexWispMainWindow
+└── Conversation
+    ├── Header and in-window navigation
+    ├── Transcript or history
+    └── Retained Composer
 ```
 
-- Compact is a 680 × 190 DIP input-first surface. The Composer is the visual anchor; do not show history, permanent suggestion rows, a source-preview card, or a permanent `Ready` status.
-- Expanded is a 680 × 640 DIP continuous conversation. Transcript gets the vertical space and the retained Composer stays anchored at the bottom.
-- Workspace targets 1180 × 780 DIP with a 248–264 DIP sidebar and an approximately 840 DIP centered conversation/Composer column.
-- Presentation changes preserve the same draft, Composer state, focus where sensible, conversation, and in-flight request. They are not separate Chat windows.
+- The main window starts directly in the 680 × 640 DIP Conversation layout. Do not reintroduce a Compact/Prompt presentation or an expansion transition.
+- The transcript gets the vertical space and the retained Composer stays anchored at the bottom. Navigation opens inside the same window; there is no permanent sidebar.
+- Switching conversations or opening history preserves the retained Composer entity and does not open another Chat window.
+- `chart_main_window` remains an independent visual reference example, not another presentation of this Chat window.
 
 ## Theme, spacing, and geometry
 
