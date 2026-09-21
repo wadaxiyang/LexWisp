@@ -2,9 +2,9 @@ use windows_sys::Win32::{
     Foundation::{POINT, RECT},
     Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint},
     UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongW, MB_ICONERROR,
-        MB_OK, MessageBoxW, SW_HIDE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
-        SetForegroundWindow, SetWindowPos, ShowWindow,
+        AdjustWindowRectEx, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongW, HWND_NOTOPMOST,
+        HWND_TOPMOST, MB_ICONERROR, MB_OK, MessageBoxW, SW_HIDE, SW_SHOWNORMAL, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow,
     },
 };
 
@@ -57,6 +57,31 @@ pub fn show_native_window(handle: isize) -> Result<(), String> {
     unsafe {
         ShowWindow(handle as _, SW_SHOWNORMAL);
         SetForegroundWindow(handle as _);
+    }
+    Ok(())
+}
+
+#[allow(unsafe_code)]
+pub fn set_native_window_pinned(handle: isize, pinned: bool) -> Result<(), String> {
+    if handle == 0 {
+        return Err("the native window handle is null".into());
+    }
+    let layer = if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    // SAFETY: the handle belongs to the live GPUI window. This synchronous call changes only
+    // the window's z-order and retains no pointer or Rust reference.
+    if unsafe {
+        SetWindowPos(
+            handle as _,
+            layer,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
     }
     Ok(())
 }

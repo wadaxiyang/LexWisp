@@ -5,38 +5,20 @@ use std::{
 
 use async_channel::{Receiver, Sender, TrySendError};
 use lexwisp_core::{
-    ActionDescriptor, ActionError, ActionFuture, ActionHandler, ActionId, ActionRequest,
-    ActionResult, AiMessage, AiRole, AttemptId, Capability, ChatAttachmentContent,
-    ChatConversationSummary, ChatDraft, ChatError, ChatHistoryPort, ChatInvocationRequest,
-    ChatMessageSnapshot, ChatMessageStatus, ChatModelPreference, ChatRunPort, ChatSnapshot,
-    ChatUiPort, ChatUiResultFuture, ConversationId, ExecutionObserver, ExecutionSnapshot,
-    ExecutionStatus, InvocationId, MessageId, PersistedChatConversation, PluginDescriptor,
-    PluginId, QualifiedActionId, StorageState, SurfaceKind,
+    AiMessage, AiRole, AttemptId, ChatAttachmentContent, ChatConversationSummary, ChatDraft,
+    ChatError, ChatHistoryPort, ChatInvocationRequest, ChatMessageSnapshot, ChatMessageStatus,
+    ChatModelPreference, ChatRunPort, ChatSnapshot, ChatUiPort, ChatUiResultFuture, ConversationId,
+    ExecutionObserver, ExecutionSnapshot, ExecutionStatus, InvocationId, MessageId,
+    PersistedChatConversation, StorageState, SurfaceKind,
 };
 
 const ESTIMATED_CHARS_PER_TOKEN: usize = 4;
-
-pub fn chat_plugin() -> PluginDescriptor {
-    PluginDescriptor::new(
-        PluginId::parse("org.lexwisp.chat").expect("built-in Chat plugin ID is valid"),
-        "Chat",
-        vec![Capability::AiInvoke, Capability::StorageWrite],
-    )
-}
-
-pub fn chat_action() -> ActionDescriptor {
-    let plugin = chat_plugin();
-    ActionDescriptor::new(
-        plugin.id().clone(),
-        ActionId::parse("ask").expect("built-in Chat action ID is valid"),
-        "Ask",
-    )
-}
 
 struct ConversationState {
     id: ConversationId,
     title: String,
     model_preference: ChatModelPreference,
+    favorite: bool,
     messages: Arc<Vec<Arc<ChatMessageSnapshot>>>,
     active_invocation: Option<InvocationId>,
     active_assistant: Option<MessageId>,
@@ -52,8 +34,9 @@ impl ConversationState {
     fn empty(id: ConversationId, updated_order: u64) -> Self {
         Self {
             id,
-            title: "New conversation".into(),
+            title: "New chat".into(),
             model_preference: ChatModelPreference::Fast,
+            favorite: false,
             messages: Arc::new(Vec::new()),
             active_invocation: None,
             active_assistant: None,
@@ -71,6 +54,7 @@ impl ConversationState {
             id: record.id().clone(),
             title: record.title().to_owned(),
             model_preference: record.model_preference().clone(),
+            favorite: record.favorite(),
             messages: Arc::new(record.messages().iter().cloned().map(Arc::new).collect()),
             active_invocation: None,
             active_assistant: None,
@@ -89,6 +73,7 @@ impl ConversationState {
             self.title.clone(),
             self.model_preference.clone(),
             self.starting || self.active_invocation.is_some(),
+            self.favorite,
             self.updated_order,
         )
     }
@@ -179,7 +164,6 @@ impl ChatState {
 
 pub struct ChatController {
     self_weak: Weak<Self>,
-    action: QualifiedActionId,
     runner: Arc<dyn ChatRunPort>,
     history: Arc<dyn ChatHistoryPort>,
     state: Mutex<ChatState>,
@@ -190,9 +174,6 @@ impl ChatController {
         runner: Arc<dyn ChatRunPort>,
         history: Arc<dyn ChatHistoryPort>,
     ) -> Result<Arc<Self>, ChatError> {
-        let descriptor = chat_action();
-        let action =
-            QualifiedActionId::new(descriptor.plugin_id().clone(), descriptor.id().clone());
         let restored = history.restore()?;
         let mut conversations = restored
             .into_iter()
@@ -223,7 +204,6 @@ impl ChatController {
         }
         Ok(Arc::new_cyclic(|weak| Self {
             self_weak: weak.clone(),
-            action,
             runner,
             history,
             state: Mutex::new(ChatState {
@@ -235,10 +215,6 @@ impl ChatController {
                 subscribers: Vec::new(),
             }),
         }))
-    }
-
-    pub fn action_id(&self) -> QualifiedActionId {
-        self.action.clone()
     }
 
     fn prepare(
@@ -317,7 +293,7 @@ impl ChatController {
                     .find(|message| message.is_user)
                     .and_then(|message| message.attachments.first())
                     .map(|attachment| attachment.name().chars().take(48).collect())
-                    .unwrap_or_else(|| "New conversation".into())
+                    .unwrap_or_else(|| "New chat".into())
             } else {
                 input.chars().take(48).collect()
             };
@@ -333,7 +309,6 @@ impl ChatController {
         });
         conversation.updated_order = next_order;
         let request = ChatInvocationRequest {
-            action: self.action.clone(),
             conversation_id: conversation.id.clone(),
             user_message_id,
             assistant_message_id,
@@ -386,45 +361,25 @@ impl ChatController {
         conversation_id: ConversationId,
         draft: ChatDraft,
         regenerate: bool,
-    ) -> Result<ActionResult, ActionError> {
-        let request = self
-            .prepare(&conversation_id, draft, regenerate)
-            .map_err(|error| ActionError::Failed(error.to_string()))?;
+    ) -> Result<(), ChatError> {
+        let request = self.prepare(&conversation_id, draft, regenerate)?;
         let assistant_id = request.assistant_message_id.clone();
         let observer: Arc<dyn ExecutionObserver> = Arc::new(ChatExecutionObserver {
             controller: self.self_weak.clone(),
         });
         match self.runner.run(request, observer).await {
-            Ok(snapshot) if snapshot.status == ExecutionStatus::Completed => Ok(ActionResult {
-                output: snapshot.output,
-            }),
+            Ok(snapshot) if snapshot.status == ExecutionStatus::Completed => Ok(()),
             Ok(snapshot) if snapshot.status == ExecutionStatus::Cancelled => {
-                Err(ActionError::Cancelled)
+                Err(ChatError::Failed("request was cancelled".into()))
             }
-            Ok(snapshot) => Err(ActionError::Failed(
+            Ok(snapshot) => Err(ChatError::Failed(
                 snapshot.error.unwrap_or_else(|| "request failed".into()),
             )),
             Err(error) => {
                 self.fail_to_start(&assistant_id, error.to_string());
-                Err(ActionError::Failed(error.to_string()))
+                Err(ChatError::Failed(error.to_string()))
             }
         }
-    }
-}
-
-impl ActionHandler for ChatController {
-    fn execute<'a>(&'a self, request: ActionRequest) -> ActionFuture<'a> {
-        let conversation_id = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_conversation
-            .clone();
-        Box::pin(self.execute_draft_for(
-            conversation_id,
-            ChatDraft::text_only(request.input),
-            false,
-        ))
     }
 }
 
@@ -581,6 +536,59 @@ impl ChatUiPort for ChatController {
         Ok(())
     }
 
+    fn set_conversation_favorite(
+        &self,
+        conversation_id: &ConversationId,
+        favorite: bool,
+    ) -> Result<(), ChatError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let conversation = state
+            .conversations
+            .get_mut(conversation_id)
+            .ok_or(ChatError::ConversationNotFound)?;
+        self.history
+            .set_conversation_favorite(conversation_id, favorite)?;
+        conversation.favorite = favorite;
+        state.publish();
+        Ok(())
+    }
+
+    fn search_conversations(
+        &self,
+        query: &str,
+        favorites_only: bool,
+    ) -> Vec<ChatConversationSummary> {
+        let query = query.trim().to_lowercase();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut matches = state
+            .conversations
+            .values()
+            .filter(|conversation| !favorites_only || conversation.favorite)
+            .filter(|conversation| {
+                query.is_empty()
+                    || conversation.title.to_lowercase().contains(&query)
+                    || conversation
+                        .messages
+                        .iter()
+                        .any(|message| message.content.to_lowercase().contains(&query))
+            })
+            .map(ConversationState::summary)
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right
+                .updated_order()
+                .cmp(&left.updated_order())
+                .then_with(|| left.id().cmp(right.id()))
+        });
+        matches
+    }
+
     fn send_draft(&self, draft: ChatDraft) -> ChatUiResultFuture<'_> {
         let conversation_id = self
             .state
@@ -588,12 +596,7 @@ impl ChatUiPort for ChatController {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active_conversation
             .clone();
-        Box::pin(async move {
-            self.execute_draft_for(conversation_id, draft, false)
-                .await
-                .map(|_| ())
-                .map_err(|error| ChatError::Failed(error.to_string()))
-        })
+        Box::pin(async move { self.execute_draft_for(conversation_id, draft, false).await })
     }
 
     fn stop(&self) -> Result<(), ChatError> {
@@ -639,10 +642,7 @@ impl ChatUiPort for ChatController {
         Box::pin(async move {
             let conversation_id = conversation_id?;
             let draft = draft.ok_or(ChatError::NothingToRetry)?;
-            self.execute_draft_for(conversation_id, draft, true)
-                .await
-                .map(|_| ())
-                .map_err(|error| ChatError::Failed(error.to_string()))
+            self.execute_draft_for(conversation_id, draft, true).await
         })
     }
 }
@@ -656,9 +656,7 @@ impl ExecutionObserver for ChatExecutionObserver {
         let Some(controller) = self.controller.upgrade() else {
             return;
         };
-        let Some(conversation_id) = snapshot.conversation_id.as_ref() else {
-            return;
-        };
+        let conversation_id = &snapshot.conversation_id;
         let mut state = controller
             .state
             .lock()
@@ -669,7 +667,7 @@ impl ExecutionObserver for ChatExecutionObserver {
         if conversation
             .active_assistant
             .as_ref()
-            .is_some_and(|id| snapshot.assistant_message_id.as_ref() != Some(id))
+            .is_some_and(|id| &snapshot.assistant_message_id != id)
             || snapshot.sequence <= conversation.last_execution_sequence
         {
             return;
@@ -678,21 +676,19 @@ impl ExecutionObserver for ChatExecutionObserver {
         conversation.starting = false;
         conversation.active_invocation =
             (!snapshot.status.is_terminal()).then(|| snapshot.invocation_id.clone());
-        if let Some(message_id) = snapshot.assistant_message_id.as_ref() {
-            replace_message(conversation, message_id, |message| {
-                message.content = snapshot.output.clone();
-                message.status = match snapshot.status {
-                    ExecutionStatus::Completed => ChatMessageStatus::Completed,
-                    ExecutionStatus::Cancelled => ChatMessageStatus::CancelledPartial,
-                    ExecutionStatus::Failed | ExecutionStatus::Interrupted => {
-                        ChatMessageStatus::FailedPartial
-                    }
-                    ExecutionStatus::Queued
-                    | ExecutionStatus::Running
-                    | ExecutionStatus::Cancelling => ChatMessageStatus::Generating,
-                };
-            });
-        }
+        replace_message(conversation, &snapshot.assistant_message_id, |message| {
+            message.content = snapshot.output.clone();
+            message.status = match snapshot.status {
+                ExecutionStatus::Completed => ChatMessageStatus::Completed,
+                ExecutionStatus::Cancelled => ChatMessageStatus::CancelledPartial,
+                ExecutionStatus::Failed | ExecutionStatus::Interrupted => {
+                    ChatMessageStatus::FailedPartial
+                }
+                ExecutionStatus::Queued
+                | ExecutionStatus::Running
+                | ExecutionStatus::Cancelling => ChatMessageStatus::Generating,
+            };
+        });
         conversation.has_unsaved_result = snapshot.storage == StorageState::Unsaved;
         conversation.status_text = match snapshot.status {
             ExecutionStatus::Queued => "Queued".into(),
@@ -839,6 +835,10 @@ mod tests {
         fn delete_conversation(&self, _: &ConversationId) -> Result<(), ChatError> {
             Ok(())
         }
+
+        fn set_conversation_favorite(&self, _: &ConversationId, _: bool) -> Result<(), ChatError> {
+            Ok(())
+        }
     }
 
     struct ImmediateRun;
@@ -850,12 +850,9 @@ mod tests {
         ) -> ChatRunFuture<'_> {
             let snapshot = ExecutionSnapshot {
                 invocation_id: InvocationId::new(),
-                plugin_id: request.action.plugin_id().clone(),
-                action: request.action.clone(),
-                plugin_generation: 1,
-                conversation_id: Some(request.conversation_id),
-                user_message_id: Some(request.user_message_id),
-                assistant_message_id: Some(request.assistant_message_id),
+                conversation_id: request.conversation_id,
+                user_message_id: request.user_message_id,
+                assistant_message_id: request.assistant_message_id,
                 provider_id: ProviderId::parse("fixture").expect("provider ID"),
                 model_id: "fixture".into(),
                 sequence: 1,
@@ -888,10 +885,7 @@ mod tests {
     fn controller_uses_stable_ids_and_projects_the_answer() {
         let controller = controller();
         let conversation = controller.snapshot().conversation_id;
-        let result =
-            futures_lite::future::block_on(controller.execute(ActionRequest::manual("hello")))
-                .expect("chat succeeds");
-        assert_eq!(result.output, "answer");
+        futures_lite::future::block_on(controller.send("hello".into())).expect("chat succeeds");
         let snapshot = controller.snapshot();
         assert_eq!(snapshot.conversation_id, conversation);
         assert_eq!(snapshot.messages.len(), 2);

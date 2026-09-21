@@ -8,7 +8,7 @@ use lexwisp_core::{AppSettings, AtomicFileWriter, SettingsError};
 
 mod content;
 
-pub use content::{ContentStore, ContentStoreOwner, StorageError, StoredPlugin, WriteReceipt};
+pub use content::{ContentStore, ContentStoreOwner, StorageError, WriteReceipt};
 
 #[derive(Clone)]
 pub struct ConfigStore {
@@ -117,13 +117,16 @@ fn parse_settings(source: &str) -> Result<AppSettings, toml::de::Error> {
             .and_then(toml::Value::as_integer)
             == Some(1)
     {
-        table.remove("translation_action_id");
-        if table.get("launch_mode").and_then(toml::Value::as_str) == Some("translate_selection") {
-            table.insert(
-                "launch_mode".into(),
-                toml::Value::String("action_palette".into()),
-            );
+        for obsolete in [
+            "translation_action_id",
+            "launch_mode",
+            "default_action_id",
+            "dismiss_overrides",
+            "action_parameter_defaults",
+        ] {
+            table.remove(obsolete);
         }
+        table.insert("schema_version".into(), toml::Value::Integer(2));
     }
     value.try_into()
 }
@@ -135,7 +138,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use lexwisp_core::{DismissPolicy, FileWriteError, GlobalHotkey, LaunchMode};
+    use lexwisp_core::{FileWriteError, GlobalHotkey};
 
     use super::*;
 
@@ -176,10 +179,7 @@ mod tests {
         let expected = AppSettings::default()
             .with_hotkey(GlobalHotkey::AltShiftSpace)
             .with_launch_at_startup(true)
-            .with_popup_retention_seconds(0)
-            .with_launch_mode(LaunchMode::DefaultAction)
-            .with_default_action_id(Some("org.example.tool/run".into()))
-            .with_dismiss_override("org.example.tool/run", Some(DismissPolicy::Continue));
+            .with_popup_retention_seconds(0);
         store.save(&expected).expect("settings should save");
 
         let loaded = store.load().expect("settings should load");
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_shortcut_settings_migrate_to_the_action_palette() {
+    fn retired_action_settings_migrate_to_chat_settings() {
         let path = isolated_path();
         fs::create_dir_all(path.parent().expect("settings have a parent"))
             .expect("test directory should be created");
@@ -240,13 +240,14 @@ translation_action_id = "org.example.retired/run"
         let store = ConfigStore::at(path.clone(), Arc::new(TestWriter));
 
         let loaded = store.load().expect("legacy settings should migrate");
-        assert_eq!(loaded.settings().launch_mode(), LaunchMode::ActionPalette);
+        assert_eq!(loaded.settings().schema_version(), 2);
         store
             .save(loaded.settings())
             .expect("migrated settings should save");
         let saved = fs::read_to_string(&path).expect("saved settings should be readable");
         assert!(!saved.contains("translate_selection"));
         assert!(!saved.contains("translation_action_id"));
+        assert!(!saved.contains("launch_mode"));
 
         fs::remove_dir_all(path.parent().expect("bounded test directory"))
             .expect("test directory is removable");

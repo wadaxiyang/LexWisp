@@ -3,8 +3,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use thiserror::Error;
 
 use crate::{
-    AttemptId, ChatAttachment, ChatModelPreference, ConversationId, DeclarativeActionDefinition,
-    ExecutionObserver, InvocationId, MessageId, QualifiedActionId,
+    AttemptId, ChatAttachment, ChatModelPreference, ConversationId, ExecutionObserver,
+    InvocationId, MessageId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,7 +23,6 @@ pub struct AiMessage {
 
 #[derive(Clone, Debug)]
 pub struct ChatInvocationRequest {
-    pub action: QualifiedActionId,
     pub conversation_id: ConversationId,
     pub user_message_id: MessageId,
     pub assistant_message_id: MessageId,
@@ -60,24 +59,4 @@ pub trait ChatRunPort: Send + Sync {
     fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError>;
 
     fn context_budget(&self, preference: &ChatModelPreference) -> usize;
-}
-
-#[derive(Clone, Debug)]
-pub struct TextInvocationRequest {
-    pub action: QualifiedActionId,
-    pub definition: DeclarativeActionDefinition,
-    pub input: String,
-    pub parameters: std::collections::BTreeMap<String, String>,
-}
-
-pub type TextRunFuture<'a> = ChatRunFuture<'a>;
-
-pub trait TextRunPort: Send + Sync {
-    fn run(
-        &self,
-        request: TextInvocationRequest,
-        observer: Arc<dyn ExecutionObserver>,
-    ) -> TextRunFuture<'_>;
-
-    fn cancel(&self, invocation_id: &InvocationId) -> Result<(), ChatRunError>;
 }

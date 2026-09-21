@@ -1,11 +1,11 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin};
+use std::{future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{ModelProfile, ProviderConfig, ProviderId};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -39,40 +39,6 @@ pub enum ThemePreference {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LaunchMode {
-    #[default]
-    ActionPalette,
-    DefaultAction,
-}
-
-impl LaunchMode {
-    pub const ALL: [Self; 2] = [Self::ActionPalette, Self::DefaultAction];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::ActionPalette => "Choose an action",
-            Self::DefaultAction => "Run default action",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DismissPolicy {
-    Cancel,
-    Continue,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LaunchRoute {
-    ActionPalette,
-    QuickAsk,
-    Automatic(String),
-    MissingDefaultAction,
-}
-
 impl ThemePreference {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
 
@@ -93,16 +59,8 @@ pub struct AppSettings {
     theme: ThemePreference,
     launch_at_startup: bool,
     popup_retention_seconds: u64,
-    #[serde(default)]
-    launch_mode: LaunchMode,
-    #[serde(default)]
-    default_action_id: Option<String>,
-    #[serde(default)]
-    dismiss_overrides: BTreeMap<String, DismissPolicy>,
     #[serde(default = "default_recording_enabled")]
     recording_enabled: bool,
-    #[serde(default)]
-    action_parameter_defaults: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     providers: Vec<ProviderConfig>,
     #[serde(default)]
@@ -117,11 +75,7 @@ impl Default for AppSettings {
             theme: ThemePreference::System,
             launch_at_startup: false,
             popup_retention_seconds: 30,
-            launch_mode: LaunchMode::ActionPalette,
-            default_action_id: None,
-            dismiss_overrides: BTreeMap::new(),
             recording_enabled: true,
-            action_parameter_defaults: BTreeMap::new(),
             providers: Vec::new(),
             default_profile: None,
         }
@@ -137,38 +91,6 @@ impl AppSettings {
             return Err(SettingsError::Invalid(
                 "popup retention must be between 0 and 600 seconds".into(),
             ));
-        }
-        if self
-            .default_action_id
-            .as_ref()
-            .is_some_and(|id| id.trim().is_empty())
-        {
-            return Err(SettingsError::Invalid(
-                "default action ID cannot be empty".into(),
-            ));
-        }
-        if let Some(action) = &self.default_action_id {
-            action
-                .parse::<crate::QualifiedActionId>()
-                .map_err(SettingsError::Invalid)?;
-        }
-        for action in self.dismiss_overrides.keys() {
-            action
-                .parse::<crate::QualifiedActionId>()
-                .map_err(SettingsError::Invalid)?;
-        }
-        for (action, parameters) in &self.action_parameter_defaults {
-            action
-                .parse::<crate::QualifiedActionId>()
-                .map_err(SettingsError::Invalid)?;
-            if parameters
-                .iter()
-                .any(|(key, value)| key.trim().is_empty() || value.len() > 256)
-            {
-                return Err(SettingsError::Invalid(
-                    "action parameter defaults contain an invalid key or value".into(),
-                ));
-            }
         }
         if self.providers.iter().any(|provider| {
             provider.context_budget() == 0
@@ -229,42 +151,12 @@ impl AppSettings {
         self.popup_retention_seconds
     }
 
-    pub const fn launch_mode(&self) -> LaunchMode {
-        self.launch_mode
-    }
-
-    pub fn default_action_id(&self) -> Option<&str> {
-        self.default_action_id.as_deref()
-    }
-
-    pub fn launch_route(&self, has_verified_selection: bool) -> LaunchRoute {
-        if !has_verified_selection {
-            return LaunchRoute::QuickAsk;
-        }
-        match self.launch_mode {
-            LaunchMode::ActionPalette => LaunchRoute::ActionPalette,
-            LaunchMode::DefaultAction => self
-                .default_action_id
-                .clone()
-                .map(LaunchRoute::Automatic)
-                .unwrap_or(LaunchRoute::MissingDefaultAction),
-        }
-    }
-
-    pub fn dismiss_override(&self, action: &str) -> Option<DismissPolicy> {
-        self.dismiss_overrides.get(action).copied()
-    }
-
     pub fn providers(&self) -> &[ProviderConfig] {
         &self.providers
     }
 
     pub const fn recording_enabled(&self) -> bool {
         self.recording_enabled
-    }
-
-    pub fn action_parameter_defaults(&self, action: &str) -> Option<&BTreeMap<String, String>> {
-        self.action_parameter_defaults.get(action)
     }
 
     pub const fn default_profile(&self) -> Option<&ModelProfile> {
@@ -295,45 +187,8 @@ impl AppSettings {
         self
     }
 
-    pub fn with_launch_mode(mut self, mode: LaunchMode) -> Self {
-        self.launch_mode = mode;
-        self
-    }
-
-    pub fn with_default_action_id(mut self, id: Option<String>) -> Self {
-        self.default_action_id = id;
-        self
-    }
-
-    pub fn with_dismiss_override(
-        mut self,
-        action: impl Into<String>,
-        policy: Option<DismissPolicy>,
-    ) -> Self {
-        let action = action.into();
-        if let Some(policy) = policy {
-            self.dismiss_overrides.insert(action, policy);
-        } else {
-            self.dismiss_overrides.remove(&action);
-        }
-        self
-    }
-
     pub fn with_recording_enabled(mut self, enabled: bool) -> Self {
         self.recording_enabled = enabled;
-        self
-    }
-
-    pub fn with_action_parameter_default(
-        mut self,
-        action: impl Into<String>,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        self.action_parameter_defaults
-            .entry(action.into())
-            .or_default()
-            .insert(key.into(), value.into());
         self
     }
 
@@ -412,30 +267,5 @@ mod tests {
             settings.validate(),
             Err(SettingsError::Invalid(_))
         ));
-    }
-
-    #[test]
-    fn all_launch_modes_have_explicit_selection_and_no_selection_routes() {
-        for mode in LaunchMode::ALL {
-            let settings = AppSettings::default()
-                .with_launch_mode(mode)
-                .with_default_action_id(Some("org.example.tool/run".into()));
-            assert_eq!(settings.launch_route(false), LaunchRoute::QuickAsk);
-            match mode {
-                LaunchMode::ActionPalette => {
-                    assert_eq!(settings.launch_route(true), LaunchRoute::ActionPalette)
-                }
-                LaunchMode::DefaultAction => assert_eq!(
-                    settings.launch_route(true),
-                    LaunchRoute::Automatic("org.example.tool/run".into())
-                ),
-            }
-        }
-        assert_eq!(
-            AppSettings::default()
-                .with_launch_mode(LaunchMode::DefaultAction)
-                .launch_route(true),
-            LaunchRoute::MissingDefaultAction
-        );
     }
 }

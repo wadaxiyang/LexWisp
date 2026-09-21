@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AttemptId, ConversationId, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId,
-};
+use crate::{AttemptId, ConversationId, InvocationId, MessageId, ProviderId};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -36,12 +34,9 @@ pub enum StorageState {
 #[derive(Clone, Debug)]
 pub struct ExecutionSnapshot {
     pub invocation_id: InvocationId,
-    pub plugin_id: PluginId,
-    pub action: QualifiedActionId,
-    pub plugin_generation: u64,
-    pub conversation_id: Option<ConversationId>,
-    pub user_message_id: Option<MessageId>,
-    pub assistant_message_id: Option<MessageId>,
+    pub conversation_id: ConversationId,
+    pub user_message_id: MessageId,
+    pub assistant_message_id: MessageId,
     pub provider_id: ProviderId,
     pub model_id: String,
     pub sequence: u64,
@@ -61,7 +56,7 @@ pub trait ExecutionObserver: Send + Sync {
 pub struct ExecutionCheckpoint {
     pub snapshot: ExecutionSnapshot,
     pub input: String,
-    pub chat: Option<ChatCheckpoint>,
+    pub chat: ChatCheckpoint,
 }
 
 #[derive(Clone, Debug)]

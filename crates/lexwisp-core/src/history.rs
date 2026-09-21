@@ -2,12 +2,11 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 use thiserror::Error;
 
-use crate::{ExecutionStatus, InvocationId, QualifiedActionId};
+use crate::{ExecutionStatus, InvocationId};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HistoryQuery {
     pub search: String,
-    pub plugin_id: Option<String>,
     pub status: Option<ExecutionStatus>,
     pub favorites_only: bool,
     pub cursor: Option<HistoryCursor>,
@@ -23,7 +22,6 @@ pub struct HistoryCursor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryItem {
     pub invocation_id: InvocationId,
-    pub action: QualifiedActionId,
     pub title: String,
     pub preview: String,
     pub status: ExecutionStatus,
@@ -89,7 +87,6 @@ pub trait HistoryUiPort: Send + Sync {
     ) -> HistoryFuture<'_, ()>;
     fn delete(&self, invocation_id: InvocationId) -> HistoryFuture<'_, ()>;
     fn clear(&self, mode: ClearHistoryMode) -> HistoryFuture<'_, ()>;
-    fn retry(&self, invocation_id: InvocationId) -> HistoryFuture<'_, String>;
     fn create_backup(&self) -> HistoryFuture<'_, PathBuf>;
     fn diagnostics(&self) -> DiagnosticsSnapshot;
 }

@@ -41,8 +41,6 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::WindowsContextHandle;
-
 pub const MESSAGE_WINDOW_CLASS: &str = "LexWisp.MessageWindow.v1";
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_COMMAND_QUEUE: u32 = WM_APP + 2;
@@ -84,9 +82,7 @@ enum ThreadCommand {
 struct ThreadState {
     ui_commands: Sender<HostUiCommand>,
     surface_intents: LatestSurfaceIntent,
-    context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
-    launch_generation: u64,
     hotkey_id: Option<i32>,
     hotkey: Option<GlobalHotkey>,
     taskbar_created: u32,
@@ -175,7 +171,6 @@ impl WindowsShell {
     pub fn start(
         hotkey: GlobalHotkey,
         ui_commands: Sender<HostUiCommand>,
-        context: WindowsContextHandle,
     ) -> Result<Self, PlatformError> {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -189,7 +184,6 @@ impl WindowsShell {
                     ui_commands,
                     surface_sender,
                     stale_surface_receiver,
-                    context,
                     commands_rx,
                     ready_tx,
                 )
@@ -276,7 +270,6 @@ fn shell_thread(
     ui_commands: Sender<HostUiCommand>,
     surface_sender: Sender<HostUiCommand>,
     stale_surface_receiver: Receiver<HostUiCommand>,
-    context: WindowsContextHandle,
     commands: mpsc::Receiver<ThreadCommand>,
     ready: mpsc::SyncSender<Result<(isize, Option<String>), PlatformError>>,
 ) {
@@ -363,9 +356,7 @@ fn shell_thread(
                 sender: surface_sender,
                 stale_receiver: stale_surface_receiver,
             },
-            context,
             commands,
-            launch_generation: 0,
             hotkey_id: initial_hotkey_error.is_none().then_some(HOTKEY_PRIMARY),
             hotkey: initial_hotkey_error.is_none().then_some(hotkey),
             taskbar_created,
@@ -412,17 +403,7 @@ unsafe extern "system" fn window_proc(
         }
         match message {
             WM_HOTKEY => {
-                let prepared = state.context.prepare_foreground_capture();
-                state.launch_generation = state.launch_generation.saturating_add(1);
-                let launch_generation = state.launch_generation;
-                state
-                    .surface_intents
-                    .send(HostUiCommand::ToggleMainShell { launch_generation });
-                state.context.capture_for_launch(
-                    prepared,
-                    launch_generation,
-                    state.ui_commands.clone(),
-                );
+                state.surface_intents.send(HostUiCommand::ToggleMainShell);
                 return 0;
             }
             WM_LEXWISP_WAKE => {
@@ -553,7 +534,7 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
                 state.surface_intents.send(HostUiCommand::ShowMainShell);
             }
             MENU_SETTINGS => {
-                let _ = state.ui_commands.try_send(HostUiCommand::ShowControlCenter);
+                let _ = state.ui_commands.try_send(HostUiCommand::ShowSettings);
             }
             MENU_EXIT => {
                 let _ = state.ui_commands.try_send(HostUiCommand::Quit);
@@ -639,12 +620,10 @@ mod tests {
             stale_receiver: receiver.clone(),
         };
         assert!(intents.send(HostUiCommand::ShowMainShell));
-        assert!(intents.send(HostUiCommand::SetMainShellPresentation(
-            lexwisp_core::ShellPresentation::Workspace,
-        )));
+        assert!(intents.send(HostUiCommand::ToggleMainShell));
         assert_eq!(
             receiver.try_recv().expect("latest intent remains queued"),
-            HostUiCommand::SetMainShellPresentation(lexwisp_core::ShellPresentation::Workspace,)
+            HostUiCommand::ToggleMainShell
         );
     }
 
@@ -678,10 +657,8 @@ mod tests {
         let _conflict = ThreadHotkey(CONFLICT_ID);
 
         let (ui_commands, _receiver) = async_channel::bounded(4);
-        let context = crate::WindowsContextService::start().expect("context worker should start");
-        let shell =
-            WindowsShell::start(GlobalHotkey::ControlAltSpace, ui_commands, context.handle())
-                .expect("the Windows shell should start");
+        let shell = WindowsShell::start(GlobalHotkey::ControlAltSpace, ui_commands)
+            .expect("the Windows shell should start");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -708,7 +685,6 @@ mod tests {
             unsafe { UnregisterHotKey(ptr::null_mut(), PROBE_ID) };
         }
         shell.shutdown();
-        context.shutdown();
         assert!(
             !previous_was_released,
             "the old shortcut must remain active"

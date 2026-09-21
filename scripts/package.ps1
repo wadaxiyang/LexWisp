@@ -49,7 +49,7 @@ try {
     Copy-Item -LiteralPath $crt[0].FullName -Destination (Join-Path $stage 'vcruntime140.dll') -Force
     $notices = [Text.StringBuilder]::new()
     [void]$notices.AppendLine("LexWisp $releaseTag - third-party notices")
-    [void]$notices.AppendLine('Inventory includes build/test dependencies, not all of which ship. QuickJS is embedded for local Script plugins. Package sources are unmodified; Windows fonts are not redistributed.')
+    [void]$notices.AppendLine('Inventory includes build/test dependencies, not all of which ship. Package sources are unmodified; Windows fonts are not redistributed.')
     [void]$notices.AppendLine("Microsoft Visual C++ Runtime $redistVersion (vcruntime140.dll), Copyright Microsoft Corporation. App-local redistributable from Visual Studio Build Tools. Redistribution list: https://aka.ms/vs/18/redistribution")
     $texts = [Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
     foreach ($package in ($metadata.packages | Where-Object source | Sort-Object name,version)) {

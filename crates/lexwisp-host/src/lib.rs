@@ -1,13 +1,9 @@
 mod ai;
-mod declarative;
+mod chat;
 mod execution;
-mod favorites;
 mod history;
 mod invocation;
-mod plugin_manager;
 mod providers;
-mod registry;
-mod script;
 mod settings;
 mod tasks;
 
@@ -15,30 +11,23 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use async_channel::Sender;
 use lexwisp_core::{
-    ActionUiPort, AppSettings, ChatHistoryPort, ChatRunPort, ContextUiPort, FavoriteUiPort,
-    HistoryUiPort, HostUiCommand, PluginId, PluginManagementUiPort, ProviderUiPort,
-    ScriptPackageFactory, SettingsUiPort, TaskOwner, TextRunPort,
+    AppSettings, ChatHistoryPort, ChatRunPort, HistoryUiPort, HostUiCommand, ProviderUiPort,
+    SettingsUiPort, TaskOwner,
 };
-use lexwisp_platform_windows::{WindowsContextHandle, WindowsCredentialStore, WindowsShellHandle};
+use lexwisp_platform_windows::{WindowsCredentialStore, WindowsShellHandle};
 use lexwisp_storage::{ConfigStore, ContentStoreOwner};
 use tokio::runtime::{Builder, Runtime};
 
-pub use registry::{
-    ActionRegistry, ActionUiService, CapabilityAuthority, PluginRegistry, RegistryError,
-    RegistryEvent,
-};
+pub use ai::AiService;
+pub use chat::ChatController;
+pub use execution::ExecutionStore;
+pub use history::HistoryService;
+pub use invocation::RunSupervisor;
+pub use providers::{ProviderRegistry, ProviderService};
 pub use tasks::{HostTaskPort, TaskScope};
 
+use invocation::ChatRunner;
 use settings::SettingsService;
-
-pub use ai::AiService;
-pub use declarative::{DeclarativeController, DeclarativePackage};
-pub use execution::ExecutionStore;
-pub use favorites::FavoriteService;
-pub use history::HistoryService;
-pub use invocation::InvocationSupervisor;
-pub use plugin_manager::PluginManager;
-pub use providers::{ProviderRegistry, ProviderService};
 
 #[derive(Clone)]
 pub struct HostUiCommandPort {
@@ -55,100 +44,38 @@ impl HostUiCommandPort {
 
 #[derive(Clone)]
 pub struct HostHandles {
-    plugins: PluginRegistry,
-    actions: ActionRegistry,
-    capabilities: CapabilityAuthority,
     tasks: HostTaskPort,
     settings: Arc<dyn SettingsUiPort>,
     providers: Arc<dyn ProviderUiPort>,
-    action_ui: Arc<dyn ActionUiPort>,
-    context: Arc<dyn ContextUiPort>,
-    favorites: Arc<dyn FavoriteUiPort>,
     history: Arc<dyn HistoryUiPort>,
     chat_history: Arc<dyn ChatHistoryPort>,
     executions: Arc<ExecutionStore>,
-    supervisor: Arc<InvocationSupervisor>,
-    plugin_manager: PluginManager,
+    supervisor: Arc<RunSupervisor>,
     ui_commands: HostUiCommandPort,
 }
 
 impl HostHandles {
-    pub const fn plugins(&self) -> &PluginRegistry {
-        &self.plugins
-    }
-
-    pub const fn actions(&self) -> &ActionRegistry {
-        &self.actions
-    }
-
-    pub const fn capabilities(&self) -> &CapabilityAuthority {
-        &self.capabilities
-    }
-
     pub const fn tasks(&self) -> &HostTaskPort {
         &self.tasks
     }
-
     pub fn settings(&self) -> Arc<dyn SettingsUiPort> {
         self.settings.clone()
     }
-
     pub fn providers(&self) -> Arc<dyn ProviderUiPort> {
         self.providers.clone()
     }
-
-    pub fn action_ui(&self) -> Arc<dyn ActionUiPort> {
-        self.action_ui.clone()
-    }
-
-    pub fn context(&self) -> Arc<dyn ContextUiPort> {
-        self.context.clone()
-    }
-
-    pub fn favorites(&self) -> Arc<dyn FavoriteUiPort> {
-        self.favorites.clone()
-    }
-
     pub fn history(&self) -> Arc<dyn HistoryUiPort> {
         self.history.clone()
     }
-
     pub fn chat_history(&self) -> Arc<dyn ChatHistoryPort> {
         self.chat_history.clone()
     }
-
     pub fn executions(&self) -> Arc<ExecutionStore> {
         self.executions.clone()
     }
-
-    pub fn plugin_management(&self) -> Arc<dyn PluginManagementUiPort> {
-        Arc::new(self.plugin_manager.clone())
+    pub fn chat_run_port(&self) -> Arc<dyn ChatRunPort> {
+        Arc::new(ChatRunner::new(self.supervisor.clone(), self.tasks.clone()))
     }
-
-    pub fn activate_installed_plugins(&self) -> Result<(), String> {
-        self.plugin_manager.activate_installed()
-    }
-
-    pub fn chat_run_port(&self, plugin_id: PluginId) -> Arc<dyn ChatRunPort> {
-        Arc::new(invocation::ScopedChatRunPort::new(
-            plugin_id,
-            self.actions.clone(),
-            self.capabilities.clone(),
-            self.supervisor.clone(),
-            self.tasks.clone(),
-        ))
-    }
-
-    pub fn text_run_port(&self, plugin_id: PluginId) -> Arc<dyn TextRunPort> {
-        Arc::new(invocation::ScopedTextRunPort::new(
-            plugin_id,
-            self.actions.clone(),
-            self.capabilities.clone(),
-            self.supervisor.clone(),
-            self.tasks.clone(),
-        ))
-    }
-
     pub const fn ui_commands(&self) -> &HostUiCommandPort {
         &self.ui_commands
     }
@@ -157,9 +84,8 @@ impl HostHandles {
 pub struct Host {
     runtime: Runtime,
     tasks: HostTaskPort,
-    supervisor: Arc<InvocationSupervisor>,
+    supervisor: Arc<RunSupervisor>,
     content: ContentStoreOwner,
-    script_factory: Arc<dyn ScriptPackageFactory>,
 }
 
 impl Host {
@@ -167,10 +93,8 @@ impl Host {
         initial_settings: AppSettings,
         config: ConfigStore,
         shell: WindowsShellHandle,
-        context: WindowsContextHandle,
         ui_commands: Sender<HostUiCommand>,
         executable: PathBuf,
-        script_factory: Arc<dyn ScriptPackageFactory>,
     ) -> Result<(Self, HostHandles), String> {
         let data_directory = config.data_directory().to_path_buf();
         let database_path = data_directory.join("lexwisp.db");
@@ -203,15 +127,10 @@ impl Host {
             provider_registry.clone(),
         ));
         let settings: Arc<dyn SettingsUiPort> = settings_service.clone();
-        let plugins = PluginRegistry::default();
-        let actions = plugins.actions();
-        let capabilities = CapabilityAuthority::default();
         let credentials: Arc<dyn lexwisp_core::CredentialStore> = Arc::new(WindowsCredentialStore);
         let ai = Arc::new(AiService::new().map_err(|error| error.to_string())?);
-        let favorite_service = Arc::new(FavoriteService::new(content.clone(), executions.clone())?);
-        let favorites: Arc<dyn FavoriteUiPort> = favorite_service.clone();
         let chat_history: Arc<dyn ChatHistoryPort> = Arc::new(content.clone());
-        let supervisor = Arc::new(InvocationSupervisor::new(
+        let supervisor = Arc::new(RunSupervisor::new(
             ai.clone(),
             provider_registry.clone(),
             credentials.clone(),
@@ -224,42 +143,21 @@ impl Host {
             ai,
             process_tasks.clone(),
         ));
-        let action_ui: Arc<dyn ActionUiPort> = Arc::new(ActionUiService::new(actions.clone()));
         let history: Arc<dyn HistoryUiPort> = Arc::new(HistoryService::new(
-            content.clone(),
+            content,
             executions.clone(),
-            favorite_service,
-            action_ui.clone(),
             settings_service,
             process_tasks,
-            data_directory.clone(),
+            data_directory,
         ));
-        let plugin_manager = PluginManager::new(
-            &data_directory,
-            content,
-            plugins.clone(),
-            capabilities.clone(),
-            supervisor.clone(),
-            tasks.clone(),
-            settings.clone(),
-            ui_commands.clone(),
-            script_factory.clone(),
-        )?;
         let handles = HostHandles {
-            plugins,
-            actions,
-            capabilities,
             tasks: tasks.clone(),
             settings,
             providers,
-            action_ui,
-            context: Arc::new(context),
-            favorites,
             history,
             chat_history,
             executions,
             supervisor: supervisor.clone(),
-            plugin_manager,
             ui_commands: HostUiCommandPort {
                 sender: ui_commands,
             },
@@ -270,7 +168,6 @@ impl Host {
                 tasks,
                 supervisor,
                 content: content_owner,
-                script_factory,
             },
             handles,
         ))
@@ -281,7 +178,6 @@ impl Host {
         self.runtime
             .block_on(self.supervisor.wait_until_idle(Duration::from_secs(2)));
         self.tasks.cancel_all();
-        self.script_factory.shutdown();
         self.runtime.shutdown_timeout(Duration::from_secs(3));
         self.content.shutdown();
     }

@@ -7,8 +7,7 @@ use std::{
 
 use lexwisp_core::{
     ChatCheckpoint, ConversationId, ExecutionCheckpoint, ExecutionObserver, ExecutionSnapshot,
-    ExecutionStatus, InvocationId, MessageId, PluginId, ProviderId, QualifiedActionId,
-    StorageState,
+    ExecutionStatus, InvocationId, MessageId, ProviderId, StorageState,
 };
 use lexwisp_storage::ContentStore;
 
@@ -20,23 +19,20 @@ const RECENT_TERMINAL_TTL: Duration = Duration::from_secs(60 * 60);
 
 pub(crate) struct ExecutionStart {
     pub invocation_id: InvocationId,
-    pub plugin_id: PluginId,
-    pub action: QualifiedActionId,
-    pub plugin_generation: u64,
-    pub conversation_id: Option<ConversationId>,
-    pub user_message_id: Option<MessageId>,
-    pub assistant_message_id: Option<MessageId>,
+    pub conversation_id: ConversationId,
+    pub user_message_id: MessageId,
+    pub assistant_message_id: MessageId,
     pub provider_id: ProviderId,
     pub model_id: String,
     pub input: String,
-    pub chat: Option<ChatCheckpoint>,
+    pub chat: ChatCheckpoint,
     pub observer: Arc<dyn ExecutionObserver>,
 }
 
 struct ExecutionAccumulator {
     snapshot: ExecutionSnapshot,
     input: String,
-    chat: Option<ChatCheckpoint>,
+    chat: ChatCheckpoint,
     observer: Arc<dyn ExecutionObserver>,
     dirty_bytes: usize,
     last_ui_flush: Instant,
@@ -147,9 +143,6 @@ impl ExecutionStore {
         let now = Instant::now();
         let snapshot = ExecutionSnapshot {
             invocation_id: start.invocation_id.clone(),
-            plugin_id: start.plugin_id,
-            action: start.action,
-            plugin_generation: start.plugin_generation,
             conversation_id: start.conversation_id,
             user_message_id: start.user_message_id,
             assistant_message_id: start.assistant_message_id,
@@ -220,7 +213,6 @@ impl ExecutionStore {
     pub(crate) fn append_text(
         &self,
         invocation_id: &InvocationId,
-        plugin_generation: u64,
         delta: &str,
     ) -> Result<(), String> {
         if delta.is_empty() {
@@ -237,9 +229,6 @@ impl ExecutionStore {
             let entry = entries
                 .get_mut(invocation_id)
                 .ok_or_else(|| "execution is no longer active".to_string())?;
-            if entry.snapshot.plugin_generation != plugin_generation {
-                return Err("stale plugin generation".into());
-            }
             if entry.snapshot.status.is_terminal() {
                 return Err("execution already reached a terminal state".into());
             }
@@ -541,7 +530,6 @@ mod tests {
         },
     };
 
-    use lexwisp_core::{ActionId, QualifiedActionId};
     use lexwisp_storage::ContentStoreOwner;
 
     use super::*;
@@ -577,26 +565,28 @@ mod tests {
         (owner, ExecutionStore::new(content, recording_enabled, 0))
     }
 
-    fn start_text(
+    fn start_chat(
         store: &ExecutionStore,
         invocation_id: InvocationId,
         observer: Arc<dyn ExecutionObserver>,
     ) {
-        let plugin = PluginId::parse("org.lexwisp.fixture").expect("plugin ID");
-        let action =
-            QualifiedActionId::new(plugin.clone(), ActionId::parse("run").expect("action ID"));
+        let user_message_id = MessageId::new();
         store.start(ExecutionStart {
             invocation_id,
-            plugin_id: plugin,
-            action,
-            plugin_generation: 1,
-            conversation_id: None,
-            user_message_id: None,
-            assistant_message_id: None,
+            conversation_id: ConversationId::new(),
+            user_message_id: user_message_id.clone(),
+            assistant_message_id: MessageId::new(),
             provider_id: ProviderId::parse("fixture").expect("provider ID"),
             model_id: "fixture".into(),
             input: "hello".into(),
-            chat: None,
+            chat: ChatCheckpoint {
+                conversation_title: "hello".into(),
+                model_preference: lexwisp_core::ChatModelPreference::Fast,
+                user_ordinal: 0,
+                assistant_ordinal: 1,
+                attempt_id: lexwisp_core::AttemptId::new(),
+                reply_to_user_id: user_message_id,
+            },
             observer,
         });
     }
@@ -613,28 +603,23 @@ mod tests {
         let (owner, content) = ContentStoreOwner::start(path).expect("content store starts");
         let store = ExecutionStore::new(content, true, 0);
         let invocation_id = InvocationId::new();
-        let plugin = PluginId::parse("org.lexwisp.chat").expect("plugin ID");
-        let action =
-            QualifiedActionId::new(plugin.clone(), ActionId::parse("ask").expect("action ID"));
+        let user_message_id = MessageId::new();
         store.start(ExecutionStart {
             invocation_id: invocation_id.clone(),
-            plugin_id: plugin,
-            action,
-            plugin_generation: 1,
-            conversation_id: Some(ConversationId::new()),
-            user_message_id: Some(MessageId::new()),
-            assistant_message_id: Some(MessageId::new()),
+            conversation_id: ConversationId::new(),
+            user_message_id: user_message_id.clone(),
+            assistant_message_id: MessageId::new(),
             provider_id: ProviderId::parse("fixture").expect("provider ID"),
             model_id: "fixture".into(),
             input: "hello".into(),
-            chat: Some(ChatCheckpoint {
+            chat: ChatCheckpoint {
                 conversation_title: "hello".into(),
                 model_preference: lexwisp_core::ChatModelPreference::Fast,
                 user_ordinal: 0,
                 assistant_ordinal: 1,
                 attempt_id: lexwisp_core::AttemptId::new(),
-                reply_to_user_id: MessageId::new(),
-            }),
+                reply_to_user_id: user_message_id,
+            },
             observer: Arc::new(Sink),
         });
         (owner, store, invocation_id)
@@ -645,7 +630,7 @@ mod tests {
         let (owner, store, invocation_id) = fixture();
         for _ in 0..1_000 {
             store
-                .append_text(&invocation_id, 1, "x")
+                .append_text(&invocation_id, "x")
                 .expect("delta applies");
         }
         assert!(store.storage.enqueued_checkpoints() < 20);
@@ -658,7 +643,7 @@ mod tests {
         let before = store.storage.enqueued_checkpoints();
         store.set_recording_enabled(false);
         store
-            .append_text(&invocation_id, 1, &"x".repeat(CHECKPOINT_BYTES + 1))
+            .append_text(&invocation_id, &"x".repeat(CHECKPOINT_BYTES + 1))
             .expect("the in-memory result remains usable");
         assert_eq!(store.storage.enqueued_checkpoints(), before);
         assert_eq!(store.storage.retention_generation().expect("generation"), 1);
@@ -674,7 +659,7 @@ mod tests {
         let (owner, store, invocation_id) = fixture();
         store.set_recording_enabled(false);
         store
-            .append_text(&invocation_id, 1, "answer")
+            .append_text(&invocation_id, "answer")
             .expect("answer remains in memory");
         store
             .commit_terminal(&invocation_id, ExecutionStatus::Completed, None)
@@ -702,7 +687,7 @@ mod tests {
         let (owner, store) = empty_store(false);
         let invocation_id = InvocationId::new();
         let observer = Arc::new(RecordingSink(StdMutex::new(Vec::new())));
-        start_text(&store, invocation_id.clone(), observer.clone());
+        start_chat(&store, invocation_id.clone(), observer.clone());
         let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
         let first_permit = semaphore
             .clone()
@@ -765,11 +750,11 @@ mod tests {
     async fn terminal_retention_is_bounded_without_pruning_active_entries() {
         let (owner, store) = empty_store(false);
         let active = InvocationId::new();
-        start_text(&store, active.clone(), Arc::new(Sink));
+        start_chat(&store, active.clone(), Arc::new(Sink));
 
         for _ in 0..500 {
             let invocation_id = InvocationId::new();
-            start_text(&store, invocation_id.clone(), Arc::new(Sink));
+            start_chat(&store, invocation_id.clone(), Arc::new(Sink));
             store.mark_running(&invocation_id).expect("starts running");
             store
                 .commit_terminal(&invocation_id, ExecutionStatus::Completed, None)
@@ -804,7 +789,7 @@ mod tests {
     async fn persisted_pruned_execution_can_still_be_favorited() {
         let (owner, store) = empty_store(true);
         let invocation_id = InvocationId::new();
-        start_text(&store, invocation_id.clone(), Arc::new(Sink));
+        start_chat(&store, invocation_id.clone(), Arc::new(Sink));
         store.mark_running(&invocation_id).expect("starts running");
         store
             .commit_terminal(&invocation_id, ExecutionStatus::Completed, None)
@@ -821,7 +806,7 @@ mod tests {
                 .finished_at = Instant::now().checked_sub(RECENT_TERMINAL_TTL * 2);
         }
         let trigger = InvocationId::new();
-        start_text(&store, trigger, Arc::new(Sink));
+        start_chat(&store, trigger, Arc::new(Sink));
         assert!(store.snapshot(&invocation_id).is_none());
 
         store
@@ -841,7 +826,7 @@ mod tests {
     async fn unrecorded_pruned_execution_reports_a_clear_error() {
         let (owner, store) = empty_store(false);
         let invocation_id = InvocationId::new();
-        start_text(&store, invocation_id.clone(), Arc::new(Sink));
+        start_chat(&store, invocation_id.clone(), Arc::new(Sink));
         store.mark_running(&invocation_id).expect("starts running");
         store
             .commit_terminal(&invocation_id, ExecutionStatus::Completed, None)
@@ -857,7 +842,7 @@ mod tests {
                 .expect("entry retained")
                 .finished_at = Instant::now().checked_sub(RECENT_TERMINAL_TTL * 2);
         }
-        start_text(&store, InvocationId::new(), Arc::new(Sink));
+        start_chat(&store, InvocationId::new(), Arc::new(Sink));
         let error = store
             .persist_for_favorite(&invocation_id)
             .await

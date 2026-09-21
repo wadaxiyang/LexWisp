@@ -1,5 +1,48 @@
 # Implementation log
 
+## Native floating Chat conversion — 2026-09-21
+
+Status: **the architectural removal, Windows build gates, packaging, and local end-to-end Chat flow passed.** Remaining native compatibility checks are listed below. This entry supersedes older product descriptions in the historical stage entries; those entries remain as an audit trail of earlier work.
+
+### Scope and migration
+
+- Removed the runtime package manager, declarative/Script runtimes, registries, capability grants, plugin storage APIs, plugin crates, selection capture/replacement path, text-action model, Control Center, and old plugin-only docs/examples. The standalone `examples/lexwisp-ui-lab/` tree was read but not modified or linked into the product.
+- Moved `ChatController` into `lexwisp-host` and `ChatExperience` into `lexwisp-ui`. The app now constructs Chat directly through typed `ChatRunPort` and `ChatHistoryPort`. `RunSupervisor` retains bounded concurrency, cancellation, streaming, terminal commits, and Host-owned tasks without package/action identity.
+- Replaced Compact/Expanded/Workspace with one 680 × 640 DIP popup based on the lab's header, switcher, transcript, composer, and History page. Settings is a page in that same window. History loads conversations in pages of 100. The hotkey toggles Chat directly; the tray remains resident while the window is hidden. The UI exposes only real first-party operations, so the lab's simulated Web control was not copied.
+- Settings TOML schema is v2. The v1 loader removes retired action keys while retaining provider, hotkey, theme, startup, retention, and recording values. SQLite schema is v7: new databases have only conversation/run tables; older v1–v6 databases migrate Chat rows and retire package/action tables and run identity columns. Conversation favorites now persist. A restart regression found during native testing was fixed: only generating assistant messages become interrupted, and user messages incorrectly marked interrupted by older startup code are repaired to submitted.
+- The Settings page merges general changes into the latest saved provider settings, so saving general settings cannot overwrite a provider just configured in the same session. The current configured provider ID is preserved when editing it. Theme changes apply to the open popup on successful save.
+- `AGENTS.md`, README, design-system documents, and package notices now describe the one-popup first-party Chat product. Old stage notes below are historical, not current architecture instructions.
+
+### Locked build and search gates
+
+All commands below completed successfully on native Windows x64 from `C:\123\CODE\LexWisp` after the final code changes:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+The test run passed 40 tests and ignored one real global-hotkey/tray conflict test. Storage tests cover a fresh package-free database, v6 Chat migration, checkpoint ordering/deletion, conversation favorites, and the completed-user-status restart regression. The prescribed dead-vocabulary search found no active product-code matches outside historical SQL migration strings, historical log text, the requested spec, and the independent UI lab. No code under the lab changed. `git diff --check` passed.
+
+`Cargo.lock` contains 879 packages versus 887 before this change. QuickJS (`rquickjs`) and `zip` are absent. `hex`, `semver`, and `sha2` remain as transitive packages in the locked graph; they are not direct plugin dependencies. There is no package/script runtime initialized at startup and no plugin directory is required.
+
+### Release and native observations
+
+- Windows 11 Pro for Workstations `10.0.26200`; 13th Gen Intel Core i5-13500, 20 logical processors, 31.79 GiB RAM. Display adapters: GameViewer Virtual Display Adapter driver `15.6.5.199`, Intel UHD Graphics 770 driver `31.0.101.3616`, NVIDIA GeForce RTX 5070 Ti driver `32.0.16.1047`. The tested display and window both reported 96 DPI (100%).
+- Release binary: `target/x86_64-pc-windows-msvc/release/LexWisp.exe`, **32,009,728 bytes**. Portable archive: `dist/LexWisp-v0.1.0-windows-x64.zip`, **12,394,009 bytes**, SHA-256 `0473cf7904a016c39aaa61f83fc513a9af2568acc6087c121cde2797213b7319`. ZIP inspection found exactly the allowlisted executable, `vcruntime140.dll`, `portable.flag`, README, and third-party notices; no test data was archived.
+- Launched `LexWisp.exe` from `target/package/LexWisp-v0.1.0-windows-x64`, with `portable.flag` beside it. First run opened Settings in the popup. A second launch exited successfully and brought the existing Chat process forward. The configured global hotkey hid the visible popup without ending the process, then reopened Chat. The Chat page, switcher, History page, and Settings page were visually inspected in the native window. After the final History pagination and error-wording edits, the rebuilt staged executable launched again with exit code 0 and created a responsive native window (PID 32924); a second launch left one process. The full interaction sequence below was performed before those two small edits.
+- A loopback OpenAI-compatible test server, with no API key or external request, received actual Chat requests. Clicking Send rendered the streamed `Hello from local mock.` reply; retry generated another request. With the active Chinese IME, the first Enter confirmed composition without sending, and a later committed Enter sent. A slow streamed retry was stopped through the UI: the SQLite execution and assistant message both ended `cancelled`, retaining 7 characters of partial output.
+- Conversation and run rows were present in SQLite after restart. The native functional-test Release build reopened a database containing completed and cancelled replies, repaired two historical user `interrupted` statuses to `submitted`, and retained the cancelled 7-character answer. History opened inside the popup; clicking its star wrote `favorite = 1` to the conversation row.
+- One visible final Release process snapshot (PID 17588) measured **65.35 MiB working set**, **72.91 MiB Private Bytes**, **577 handles**, **51 threads**, and GPU Process Memory counters of **18.58 MiB dedicated**, **1.02 MiB shared**, **28.75 MiB total committed**. This is a single visible-window observation, not a startup/performance trend or clean-machine benchmark. No working-set trimming was performed.
+
+### Pending native acceptance
+
+The tray menu's Exit click, Explorer restart restoration, actual hotkey replacement conflict, startup registration, provider Test/Save with a real credential, 125%/150% DPI, physical IME typing across multiple editors, clean-machine portability, and extended memory/GPU growth were not exercised in this session. The hotkey replacement conflict test remains intentionally ignored because it requires ownership of real system shortcuts and the notification area. These gates should not be inferred from compile, local loopback, or screenshot results.
+
 ## Stage 0 — 2026-09-19
 
 Status: **implemented; Windows Release build, launch, and Stage 0 native interaction gates passed on the machine below**. This is a local input probe, not an AI release. Clean-machine portability and the broader performance/compatibility gates remain for Stages 8–9.

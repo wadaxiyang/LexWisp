@@ -5,18 +5,16 @@ use std::{
 };
 
 use lexwisp_core::{
-    ActionRequest, ActionUiPort, ClearHistoryMode, DiagnosticsSnapshot, HistoryDetail,
-    HistoryError, HistoryFuture, HistoryPage, HistoryQuery, HistoryUiPort, InvocationId,
+    ClearHistoryMode, DiagnosticsSnapshot, HistoryDetail, HistoryError, HistoryFuture, HistoryPage,
+    HistoryQuery, HistoryUiPort, InvocationId,
 };
 use lexwisp_storage::ContentStore;
 
-use crate::{ExecutionStore, FavoriteService, SettingsService, TaskScope};
+use crate::{ExecutionStore, SettingsService, TaskScope};
 
 pub struct HistoryService {
     storage: ContentStore,
     executions: Arc<ExecutionStore>,
-    favorites: Arc<FavoriteService>,
-    actions: Arc<dyn ActionUiPort>,
     settings: Arc<SettingsService>,
     tasks: TaskScope,
     data_directory: PathBuf,
@@ -26,8 +24,6 @@ impl HistoryService {
     pub fn new(
         storage: ContentStore,
         executions: Arc<ExecutionStore>,
-        favorites: Arc<FavoriteService>,
-        actions: Arc<dyn ActionUiPort>,
         settings: Arc<SettingsService>,
         tasks: TaskScope,
         data_directory: PathBuf,
@@ -35,8 +31,6 @@ impl HistoryService {
         Self {
             storage,
             executions,
-            favorites,
-            actions,
             settings,
             tasks,
             data_directory,
@@ -78,7 +72,6 @@ impl HistoryUiPort for HistoryService {
     ) -> HistoryFuture<'_, ()> {
         let storage = self.storage.clone();
         let tasks = self.tasks.clone();
-        let favorites = self.favorites.clone();
         Box::pin(async move {
             let id = invocation_id.clone();
             tasks
@@ -86,7 +79,6 @@ impl HistoryUiPort for HistoryService {
                 .await
                 .map_err(|error| HistoryError::Storage(error.to_string()))?
                 .map_err(|error| HistoryError::Storage(error.to_string()))?;
-            favorites.set_known(invocation_id, favorite);
             Ok(())
         })
     }
@@ -95,7 +87,6 @@ impl HistoryUiPort for HistoryService {
         self.executions.revoke_persistence(&invocation_id);
         let storage = self.storage.clone();
         let tasks = self.tasks.clone();
-        let favorites = self.favorites.clone();
         Box::pin(async move {
             let id = invocation_id.clone();
             tasks
@@ -103,7 +94,6 @@ impl HistoryUiPort for HistoryService {
                 .await
                 .map_err(|error| HistoryError::Storage(error.to_string()))?
                 .map_err(|error| HistoryError::Storage(error.to_string()))?;
-            favorites.set_known(invocation_id, false);
             Ok(())
         })
     }
@@ -112,37 +102,13 @@ impl HistoryUiPort for HistoryService {
         let generation = self.executions.advance_retention_generation();
         let storage = self.storage.clone();
         let tasks = self.tasks.clone();
-        let favorites = self.favorites.clone();
         Box::pin(async move {
             tasks
                 .spawn_blocking(move || storage.clear_history(mode, generation))
                 .await
                 .map_err(|error| HistoryError::Storage(error.to_string()))?
                 .map_err(|error| HistoryError::Storage(error.to_string()))?;
-            if mode == ClearHistoryMode::IncludeFavorites {
-                favorites.clear_known();
-            }
             Ok(())
-        })
-    }
-
-    fn retry(&self, invocation_id: InvocationId) -> HistoryFuture<'_, String> {
-        let storage = self.storage.clone();
-        let tasks = self.tasks.clone();
-        let actions = self.actions.clone();
-        Box::pin(async move {
-            let id = invocation_id.clone();
-            let detail = tasks
-                .spawn_blocking(move || storage.history_detail(id.as_str()))
-                .await
-                .map_err(|error| HistoryError::Storage(error.to_string()))?
-                .map_err(|error| HistoryError::Storage(error.to_string()))?
-                .ok_or(HistoryError::NotFound)?;
-            actions
-                .invoke(detail.item.action, ActionRequest::manual(detail.input))
-                .await
-                .map(|result| result.output)
-                .map_err(|error| HistoryError::Retry(error.to_string()))
         })
     }
 

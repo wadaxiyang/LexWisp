@@ -182,6 +182,7 @@ pub struct ChatConversationSummary {
     title: String,
     model_preference: ChatModelPreference,
     is_generating: bool,
+    favorite: bool,
     updated_order: u64,
 }
 
@@ -191,6 +192,7 @@ impl ChatConversationSummary {
         title: impl Into<String>,
         model_preference: ChatModelPreference,
         is_generating: bool,
+        favorite: bool,
         updated_order: u64,
     ) -> Self {
         Self {
@@ -198,6 +200,7 @@ impl ChatConversationSummary {
             title: title.into(),
             model_preference,
             is_generating,
+            favorite,
             updated_order,
         }
     }
@@ -216,6 +219,10 @@ impl ChatConversationSummary {
 
     pub const fn is_generating(&self) -> bool {
         self.is_generating
+    }
+
+    pub const fn favorite(&self) -> bool {
+        self.favorite
     }
 
     pub const fn updated_order(&self) -> u64 {
@@ -245,6 +252,7 @@ pub struct PersistedChatConversation {
     id: ConversationId,
     title: String,
     model_preference: ChatModelPreference,
+    favorite: bool,
     messages: Vec<ChatMessageSnapshot>,
     updated_order: u64,
 }
@@ -254,6 +262,7 @@ impl PersistedChatConversation {
         id: ConversationId,
         title: impl Into<String>,
         model_preference: ChatModelPreference,
+        favorite: bool,
         messages: Vec<ChatMessageSnapshot>,
         updated_order: u64,
     ) -> Self {
@@ -261,6 +270,7 @@ impl PersistedChatConversation {
             id,
             title: title.into(),
             model_preference,
+            favorite,
             messages,
             updated_order,
         }
@@ -276,6 +286,10 @@ impl PersistedChatConversation {
 
     pub const fn model_preference(&self) -> &ChatModelPreference {
         &self.model_preference
+    }
+
+    pub const fn favorite(&self) -> bool {
+        self.favorite
     }
 
     pub fn messages(&self) -> &[ChatMessageSnapshot] {
@@ -299,7 +313,7 @@ pub enum ChatError {
     ConversationNotFound,
     #[error("the current message does not fit the estimated context budget")]
     ContextBudgetExceeded,
-    #[error("chat action failed: {0}")]
+    #[error("chat request failed: {0}")]
     Failed(String),
 }
 
@@ -314,6 +328,11 @@ pub trait ChatHistoryPort: Send + Sync {
         model_preference: &ChatModelPreference,
     ) -> Result<(), ChatError>;
     fn delete_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError>;
+    fn set_conversation_favorite(
+        &self,
+        conversation_id: &ConversationId,
+        favorite: bool,
+    ) -> Result<(), ChatError>;
 }
 
 pub trait ChatUiPort: Send + Sync {
@@ -324,6 +343,16 @@ pub trait ChatUiPort: Send + Sync {
     fn rename_conversation(&self, title: String) -> Result<(), ChatError>;
     fn switch_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError>;
     fn delete_conversation(&self, conversation_id: &ConversationId) -> Result<(), ChatError>;
+    fn set_conversation_favorite(
+        &self,
+        conversation_id: &ConversationId,
+        favorite: bool,
+    ) -> Result<(), ChatError>;
+    fn search_conversations(
+        &self,
+        query: &str,
+        favorites_only: bool,
+    ) -> Vec<ChatConversationSummary>;
     fn set_model_preference(&self, preference: ChatModelPreference) -> Result<(), ChatError>;
     fn send(&self, input: String) -> ChatUiResultFuture<'_> {
         self.send_draft(ChatDraft::text_only(input))

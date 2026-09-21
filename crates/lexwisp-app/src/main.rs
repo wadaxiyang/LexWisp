@@ -3,22 +3,17 @@
 use std::{cell::RefCell, process::ExitCode, rc::Rc, sync::Arc};
 
 use gpui_kit::{
-    AppContext, AsyncApp, Bounds, Entity, Global, Pixels, QuitMode, Subscription, Task, WeakEntity,
-    Window,
+    AppContext, AsyncApp, Entity, Global, QuitMode, Subscription, Task, WeakEntity, Window,
 };
-use lexwisp_core::{ActionDescriptor, ActionHandler, ChatUiPort, HostUiCommand};
-use lexwisp_host::Host;
+use lexwisp_core::{ChatUiPort, HostUiCommand};
+use lexwisp_host::{ChatController, Host};
 use lexwisp_platform_windows::{
-    SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsContextService,
-    WindowsShell, display_id_under_cursor, hide_native_window, set_native_window_bounds,
-    show_native_window, show_startup_error,
+    SingleInstance, SingleInstanceGuard, WindowsAtomicFileWriter, WindowsShell,
+    display_id_under_cursor, hide_native_window, set_native_window_pinned, show_native_window,
+    show_startup_error,
 };
-use lexwisp_plugins_builtin::{ChatController, ChatExperience, chat_action, chat_plugin};
-use lexwisp_plugins_script::ScriptRuntimeFactory;
 use lexwisp_storage::ConfigStore;
-use lexwisp_ui::{
-    ShellContentViewFactory, SurfaceController, SurfaceServices, SurfaceWindowPlatform,
-};
+use lexwisp_ui::{SurfaceController, SurfaceServices, SurfaceWindowPlatform, register_shortcuts};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 struct NativeWindowPlatform;
@@ -36,15 +31,8 @@ impl SurfaceWindowPlatform for NativeWindowPlatform {
         show_native_window(native_handle(window)?)
     }
 
-    fn set_bounds(&self, window: &Window, bounds: Bounds<Pixels>) -> Result<(), String> {
-        set_native_window_bounds(
-            native_handle(window)?,
-            bounds.origin.x.as_f32(),
-            bounds.origin.y.as_f32(),
-            bounds.size.width.as_f32(),
-            bounds.size.height.as_f32(),
-            window.scale_factor(),
-        )
+    fn set_pinned(&self, window: &Window, pinned: bool) -> Result<(), String> {
+        set_native_window_pinned(native_handle(window)?, pinned)
     }
 }
 
@@ -62,46 +50,25 @@ fn handle_ui_command(
     cx: &mut AsyncApp,
 ) -> bool {
     let result = match command {
-        HostUiCommand::ToggleMainShell { launch_generation } => surfaces
-            .update(cx, |surfaces, cx| {
-                surfaces.toggle_main_shell(launch_generation, cx)
-            })
+        HostUiCommand::ToggleMainShell => surfaces
+            .update(cx, |surfaces, cx| surfaces.toggle_main_shell(cx))
             .and_then(|result| result)
             .map_err(|error| ("toggle Main Shell", error)),
-        HostUiCommand::ApplyLaunchContext {
-            launch_generation,
-            snapshot,
-        } => surfaces
-            .update(cx, |surfaces, cx| {
-                surfaces.apply_launch_context(launch_generation, snapshot, cx)
-            })
-            .and_then(|result| result)
-            .map_err(|error| ("apply launch context", error)),
         HostUiCommand::ShowMainShell => surfaces
             .update(cx, |surfaces, cx| surfaces.show_main_shell(cx))
             .and_then(|result| result)
             .map_err(|error| ("open Main Shell", error)),
-        HostUiCommand::SetMainShellPresentation(presentation) => surfaces
-            .update(cx, |surfaces, cx| {
-                surfaces.set_main_shell_presentation(presentation, cx)
-            })
+        HostUiCommand::ShowSettings => surfaces
+            .update(cx, |surfaces, cx| surfaces.show_settings(cx))
             .and_then(|result| result)
-            .map_err(|error| ("change Main Shell presentation", error)),
-        HostUiCommand::ShowControlCenter => surfaces
-            .update(cx, |surfaces, cx| surfaces.show_control_center(cx))
-            .and_then(|result| result)
-            .map_err(|error| ("open Control Center", error)),
-        HostUiCommand::RefreshPlugins => {
-            let _ = surfaces.update(cx, |surfaces, cx| surfaces.refresh_plugins(cx));
-            Ok(())
-        }
+            .map_err(|error| ("open Settings", error)),
         HostUiCommand::Quit => {
             cx.update(|cx| cx.quit());
             return true;
         }
     };
-    if let Err((action, error)) = result {
-        show_startup_error(&format!("Could not {action}.\n\n{error:#}"));
+    if let Err((operation, error)) = result {
+        show_startup_error(&format!("Could not {operation}.\n\n{error:#}"));
     }
     false
 }
@@ -109,7 +76,6 @@ fn handle_ui_command(
 struct RuntimeOwners {
     host: Option<Host>,
     shell: Option<WindowsShell>,
-    context: Option<WindowsContextService>,
     _instance: SingleInstanceGuard,
 }
 
@@ -120,9 +86,6 @@ impl RuntimeOwners {
         }
         if let Some(shell) = self.shell.take() {
             shell.shutdown();
-        }
-        if let Some(context) = self.context.take() {
-            context.shutdown();
         }
     }
 }
@@ -160,89 +123,44 @@ fn run() -> Result<(), String> {
     let initial_settings = loaded.settings().clone();
     let first_run = loaded.first_run();
     let (ui_sender, ui_receiver) = async_channel::bounded(32);
-    let context = WindowsContextService::start().map_err(|error| error.to_string())?;
-    let context_handle = context.handle();
-    let mut shell = WindowsShell::start(
-        initial_settings.hotkey(),
-        ui_sender.clone(),
-        context_handle.clone(),
-    )
-    .map_err(|error| error.to_string())?;
+    let mut shell = WindowsShell::start(initial_settings.hotkey(), ui_sender.clone())
+        .map_err(|error| error.to_string())?;
     let surface_intents = shell.take_surface_intents();
     let initial_hotkey_error = shell.initial_hotkey_error().map(str::to_owned);
     let (host, handles) = Host::build(
         initial_settings,
         config,
         shell.handle(),
-        context_handle,
         ui_sender,
         executable,
-        Arc::new(ScriptRuntimeFactory::new()),
     )?;
     let owners = Rc::new(RefCell::new(Some(RuntimeOwners {
         host: Some(host),
         shell: Some(shell),
-        context: Some(context),
         _instance: instance,
     })));
     let owners_for_app = owners.clone();
     let settings = handles.settings();
     let providers = handles.providers();
     let history = handles.history();
-    let plugin_management = handles.plugin_management();
-    let plugin = chat_plugin();
-    let action = chat_action();
-    let chat_controller = ChatController::new(
-        handles.chat_run_port(plugin.id().clone()),
-        handles.chat_history(),
-    )
-    .map_err(|error| error.to_string())?;
-    let handler: Arc<dyn ActionHandler> = chat_controller.clone();
-    handles
-        .plugins()
-        .register_package(plugin.clone(), vec![(action.clone(), handler)])
+    let chat_controller = ChatController::new(handles.chat_run_port(), handles.chat_history())
         .map_err(|error| error.to_string())?;
-    handles.capabilities().replace_grants(
-        plugin.id().clone(),
-        plugin.requested_capabilities().iter().copied(),
-    );
     let chat: Arc<dyn ChatUiPort> = chat_controller.clone();
-    let descriptors: Vec<ActionDescriptor> = vec![action.clone()];
-    handles.activate_installed_plugins()?;
-    let shell_content_factory: ShellContentViewFactory = {
-        let chat = chat.clone();
-        let providers = providers.clone();
-        Rc::new(move |controller, session, window, cx| {
-            cx.new(|cx| {
-                ChatExperience::new(
-                    controller,
-                    session,
-                    chat.clone(),
-                    providers.clone(),
-                    window,
-                    cx,
-                )
-            })
-            .into()
-        })
-    };
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            register_shortcuts(cx);
             cx.set_quit_mode(QuitMode::Explicit);
             let surfaces = cx.new(|_| {
                 SurfaceController::new(
                     Rc::new(NativeWindowPlatform),
-                    SurfaceServices::new(
-                        settings.clone(),
-                        providers.clone(),
-                        chat.clone(),
-                        history.clone(),
-                        plugin_management.clone(),
-                        descriptors.clone(),
-                    ),
-                    shell_content_factory.clone(),
+                    SurfaceServices {
+                        settings: settings.clone(),
+                        providers: providers.clone(),
+                        chat: chat.clone(),
+                        history: history.clone(),
+                    },
                 )
             });
             let surface_for_commands = surfaces.downgrade();
@@ -282,9 +200,9 @@ fn run() -> Result<(), String> {
 
             if (first_run || initial_hotkey_error.is_some())
                 && let Err(error) =
-                    surfaces.update(cx, |surfaces, cx| surfaces.show_control_center(cx))
+                    surfaces.update(cx, |surfaces, cx| surfaces.show_settings(cx))
             {
-                show_startup_error(&format!("Could not open Control Center.\n\n{error:#}"));
+                show_startup_error(&format!("Could not open Settings.\n\n{error:#}"));
                 cx.quit();
                 return;
             }

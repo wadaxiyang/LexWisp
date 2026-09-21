@@ -3031,11 +3031,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash 0.2.0",
-]
 
 [[package]]
 name = "heapless"
@@ -3733,12 +3728,9 @@ dependencies = [
  "lexwisp-core",
  "lexwisp-host",
  "lexwisp-platform-windows",
- "lexwisp-plugins-builtin",
- "lexwisp-plugins-script",
  "lexwisp-storage",
  "lexwisp-ui",
  "raw-window-handle",
- "rquickjs",
 ]
 
 [[package]]
@@ -3757,23 +3749,18 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
+ "futures-lite",
  "futures-util",
- "hex",
  "lexwisp-core",
  "lexwisp-platform-windows",
  "lexwisp-storage",
  "reqwest",
- "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
  "url",
  "uuid",
- "zip",
 ]
 
 [[package]]
@@ -3784,33 +3771,7 @@ dependencies = [
  "lexwisp-core",
  "thiserror 2.0.20",
  "tokio",
- "windows 0.62.2",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "lexwisp-plugins-builtin"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "futures-lite",
- "gpui-kit",
- "lexwisp-core",
- "lexwisp-ui",
-]
-
-[[package]]
-name = "lexwisp-plugins-script"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "futures-lite",
- "lexwisp-core",
- "rquickjs",
- "semver",
- "serde",
- "serde_json",
- "toml 0.8.23",
 ]
 
 [[package]]
@@ -5758,15 +5719,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "relative-path"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bca40a312222d8ba74837cb474edef44b37f561da5f773981007a10bbaa992b0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5891,35 +5843,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "rquickjs"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
-dependencies = [
- "rquickjs-core",
-]
-
-[[package]]
-name = "rquickjs-core"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
-dependencies = [
- "hashbrown 0.17.1",
- "relative-path",
- "rquickjs-sys",
-]
-
-[[package]]
-name = "rquickjs-sys"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -7424,12 +7347,6 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
 ]
-
-[[package]]
-name = "typed-path"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
 
 [[package]]
 name = "typeid"
@@ -9267,19 +9184,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
-]
-
-[[package]]
-name = "zip"
-version = "8.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7756d0206d058333667493c4014f545f4b9603c4330ccd6d9b3f86dcab59f7d9"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap",
- "memchr",
- "typed-path",
 ]
 
 [[package]]

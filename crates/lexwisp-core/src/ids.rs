@@ -44,7 +44,6 @@ stable_id!(ConversationId);
 stable_id!(MessageId);
 stable_id!(AttemptId);
 stable_id!(InvocationId);
-stable_id!(ContextToken);
 
 #[cfg(test)]
 mod tests {

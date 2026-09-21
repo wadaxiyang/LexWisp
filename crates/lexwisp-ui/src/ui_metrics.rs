@@ -1,4 +1,4 @@
-//! Shared visual metrics for the LexWisp Main Shell.
+//! Shared visual metrics for the single LexWisp popup.
 //!
 //! Keep these values small and intentional. Do not turn this file into a
 //! generic CSS replacement. Semantic color belongs in `theme.rs`.
@@ -33,34 +33,9 @@ pub const BORDER: f32 = 1.0;
 pub const FOCUS_BORDER: f32 = 2.0;
 
 pub const HEADER_HEIGHT: f32 = 42.0;
-pub const SIDEBAR_WIDTH: f32 = 256.0;
-pub const SIDEBAR_MIN_WIDTH: f32 = 248.0;
-pub const SIDEBAR_MAX_WIDTH: f32 = 264.0;
-pub const CONVERSATION_ROW_HEIGHT: f32 = 40.0;
+pub const MAIN_WINDOW_WIDTH: f32 = 680.0;
+pub const MAIN_WINDOW_HEIGHT: f32 = 640.0;
 
-pub const TRANSCRIPT_MAX_WIDTH: f32 = 840.0;
-pub const COMPOSER_MAX_WIDTH: f32 = 840.0;
-
-pub const COMPACT_WIDTH: f32 = 680.0;
-pub const COMPACT_HEIGHT: f32 = 190.0;
-pub const EXPANDED_WIDTH: f32 = 680.0;
-pub const EXPANDED_HEIGHT: f32 = 640.0;
-pub const WORKSPACE_WIDTH: f32 = 1180.0;
-pub const WORKSPACE_HEIGHT: f32 = 780.0;
-
-pub const MAIN_SHELL_MIN_WIDTH: f32 = 560.0;
-pub const MAIN_SHELL_MIN_HEIGHT: f32 = 160.0;
-pub const WORKSPACE_RECOMMENDED_MIN_WIDTH: f32 = 920.0;
-pub const WORKSPACE_RECOMMENDED_MIN_HEIGHT: f32 = 620.0;
-
-pub fn compact_shell_size() -> Size<Pixels> {
-    size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT))
-}
-
-pub fn expanded_shell_size() -> Size<Pixels> {
-    size(px(EXPANDED_WIDTH), px(EXPANDED_HEIGHT))
-}
-
-pub fn workspace_shell_size() -> Size<Pixels> {
-    size(px(WORKSPACE_WIDTH), px(WORKSPACE_HEIGHT))
+pub fn main_window_size() -> Size<Pixels> {
+    size(px(MAIN_WINDOW_WIDTH), px(MAIN_WINDOW_HEIGHT))
 }
