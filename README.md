@@ -44,4 +44,4 @@ QuickJS is embedded in `LexWisp.exe`; no Node.js, npm, browser runtime, develope
 
 Pushing a `v*` tag whose version matches the workspace package version runs the Windows formatting, check, Clippy, test, Release build, and packaging gates, then publishes the ZIP and checksum as a GitHub Release. The portable ZIP contains only `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`.
 
-See [docs/implementation-log.md](docs/implementation-log.md), [docs/plugin-schema.md](docs/plugin-schema.md), and [docs/script-plugin-api.md](docs/script-plugin-api.md) for verified implementation evidence and plugin contracts.
+See [docs/design-system/DESIGN.md](docs/design-system/DESIGN.md) for the normative UI contract, [docs/implementation-log.md](docs/implementation-log.md) for verified implementation evidence, and [docs/plugin-schema.md](docs/plugin-schema.md) plus [docs/script-plugin-api.md](docs/script-plugin-api.md) for plugin contracts.

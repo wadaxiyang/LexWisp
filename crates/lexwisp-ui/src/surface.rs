@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
-use gpui_kit::component::{Root, Theme, ThemeMode};
+use gpui_kit::component::Root;
 use gpui_kit::{
     AnyView, App, AppContext, Bounds, Context, DisplayId, Entity, IntoElement, ParentElement,
     Pixels, Render, Size, Styled, Subscription, Task, TitlebarOptions, WeakEntity, Window,
@@ -12,7 +12,7 @@ use lexwisp_core::{
     ThemePreference,
 };
 
-use crate::control_center::ControlCenter;
+use crate::{control_center::ControlCenter, theme::apply_theme, ui_metrics};
 
 const WINDOW_MARGIN: f32 = 24.;
 const WINDOW_TRANSITION_FRAME: Duration = Duration::from_millis(16);
@@ -550,8 +550,7 @@ impl SurfaceController {
                     })
                     .into(),
             };
-            let shell =
-                cx.new(|_| LexWispWindowRoot::new(content, settings.clone(), preference, window));
+            let shell = cx.new(|_| LexWispWindowRoot::new(content, settings.clone(), window));
             cx.new(|cx| Root::new(shell, window, cx))
         })?;
         self.registry.entries.insert(
@@ -603,7 +602,10 @@ fn build_window_options(
         SurfaceKind::MainShell => (
             "LexWisp",
             presentation_size(ShellPresentation::Compact),
-            size(px(560.), px(160.)),
+            size(
+                px(ui_metrics::MAIN_SHELL_MIN_WIDTH),
+                px(ui_metrics::MAIN_SHELL_MIN_HEIGHT),
+            ),
         ),
         SurfaceKind::ControlCenter => (
             "LexWisp · Settings",
@@ -631,9 +633,9 @@ fn build_window_options(
 
 fn presentation_size(presentation: ShellPresentation) -> Size<Pixels> {
     match presentation {
-        ShellPresentation::Compact => size(px(680.), px(190.)),
-        ShellPresentation::Expanded => size(px(680.), px(640.)),
-        ShellPresentation::Workspace => size(px(1180.), px(780.)),
+        ShellPresentation::Compact => ui_metrics::compact_shell_size(),
+        ShellPresentation::Expanded => ui_metrics::expanded_shell_size(),
+        ShellPresentation::Workspace => ui_metrics::workspace_shell_size(),
     }
 }
 
@@ -648,14 +650,13 @@ fn presentation_bounds(
         .map(|display| display.visible_bounds())
         .unwrap_or(current);
     let desired = presentation_size(presentation);
-    let width = desired
-        .width
-        .as_f32()
-        .min((work_area.size.width.as_f32() - WINDOW_MARGIN * 2.).max(560.));
-    let height = desired
-        .height
-        .as_f32()
-        .min((work_area.size.height.as_f32() - WINDOW_MARGIN * 2.).max(160.));
+    let width = desired.width.as_f32().min(
+        (work_area.size.width.as_f32() - WINDOW_MARGIN * 2.).max(ui_metrics::MAIN_SHELL_MIN_WIDTH),
+    );
+    let height = desired.height.as_f32().min(
+        (work_area.size.height.as_f32() - WINDOW_MARGIN * 2.)
+            .max(ui_metrics::MAIN_SHELL_MIN_HEIGHT),
+    );
     let work_left = work_area.origin.x.as_f32();
     let work_top = work_area.origin.y.as_f32();
     let work_right = work_left + work_area.size.width.as_f32();
@@ -703,31 +704,17 @@ fn centered_in_work_area(work_area: Bounds<Pixels>, dimensions: Size<Pixels>) ->
     Bounds::centered_at(work_area.center(), dimensions)
 }
 
-pub(crate) fn apply_theme(preference: ThemePreference, window: &mut Window, cx: &mut App) {
-    let mode = match preference {
-        ThemePreference::System => window.appearance().into(),
-        ThemePreference::Light => ThemeMode::Light,
-        ThemePreference::Dark => ThemeMode::Dark,
-    };
-    Theme::change(mode, Some(window), cx);
-}
-
 struct LexWispWindowRoot {
     content: AnyView,
     _appearance: Option<Subscription>,
 }
 
 impl LexWispWindowRoot {
-    fn new(
-        content: AnyView,
-        settings: Arc<dyn SettingsUiPort>,
-        _preference: ThemePreference,
-        window: &mut Window,
-    ) -> Self {
+    fn new(content: AnyView, settings: Arc<dyn SettingsUiPort>, window: &mut Window) -> Self {
         let appearance = Some({
             window.observe_window_appearance(move |window, cx| {
                 if settings.snapshot().settings().theme() == ThemePreference::System {
-                    Theme::change(window.appearance(), Some(window), cx);
+                    apply_theme(ThemePreference::System, window, cx);
                 }
             })
         });

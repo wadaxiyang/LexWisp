@@ -4,6 +4,12 @@
 
 Build only the requested stage and real dependencies. Do not generate future crates, empty services, placeholder actions, or clickable no-op UI. Stage 0 is a native dependency/input probe, not an AI product. Preserve existing working behavior and user changes.
 
+## Independent UI lab boundary
+
+- `examples/lexwisp-ui-lab/` is a standalone UI reference project. Every file under that directory is independent from the LexWisp product workspace and must not be treated as product source, a shared module, or a dependency that the main project owns.
+- Work on the main LexWisp project may read and reference this directory, and may adapt relevant ideas in files outside the directory, but must not modify, reformat, regenerate, migrate, or update any file under `examples/lexwisp-ui-lab/` to satisfy main-project requirements.
+- Files under `examples/lexwisp-ui-lab/` may be modified only when the requested task explicitly targets that standalone UI lab itself. Such work must remain independently scoped to the directory and must not couple the lab to the main project's build, dependency graph, generated files, or delivery artifacts.
+
 ## Product boundaries
 
 - Windows x64 portable native app: Rust + GPUI + GPUI-Kit + windows-rs; one normal `LexWisp.exe` process, Host + plugins.
@@ -37,6 +43,8 @@ ExecutionStore owns live execution state; ChatController owns conversation seman
 
 ## UI discipline
 
+- `docs/design-system/DESIGN.md` is the normative LexWisp visual and interaction contract. Before UI work, read it together with `crates/lexwisp-ui/src/theme.rs` and `crates/lexwisp-ui/src/ui_metrics.rs`; do not invent a parallel visual system.
+- Raw product colors belong only in `crates/lexwisp-ui/src/theme.rs` (apart from dedicated syntax-highlight data if added later). Views use semantic `cx.theme()` roles, shared UI metrics, the 4 px spacing rhythm, restrained radii, and structural borders rather than decorative cards or persistent-panel shadows.
 - Longbridge GPUI Kit is the mandatory UI framework for all LexWisp UI work. Before designing, reviewing, or changing any UI, agents must use the installed `gpui-kit` and `gpui-kit-design-guides` skills, read both `SKILL.md` files and every guide/reference those skills mark as required for the task, then verify APIs against the workspace's locked Kit source and matching examples. If either skill is unavailable, stop UI changes and report the blocker rather than substituting another UI framework or relying on remembered APIs.
 - Before UI work, read Cargo.lock, workspace dependencies, locked Kit source and matching examples. Import the GPUI family through `gpui_kit`; do not mix sources/versions. Freeze working dependencies; pin Git patches to full commits and document removal conditions.
 - Reuse Kit inputs, buttons, selection, dialogs, themes, scrolling and lists. Do not build a second general component library or copy upstream implementations.

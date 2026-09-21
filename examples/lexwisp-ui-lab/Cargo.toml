@@ -1,0 +1,18 @@
+[package]
+name = "lexwisp-ui-lab"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+publish = false
+
+[[bin]]
+name = "quick_start"
+path = "quick_start.rs"
+
+[dependencies]
+gpui-kit = "=0.6.1"
+
+# Keep this lab independent from the parent LexWisp workspace. It owns its
+# dependency lock and can be opened directly as a separate Codex project.
+[workspace]
+resolver = "3"

@@ -21,7 +21,7 @@ use lexwisp_core::{
     PluginManagementUiPort, ProviderDraft, ProviderUiPort, SettingsUiPort, ThemePreference,
 };
 
-use crate::surface::apply_theme;
+use crate::theme::apply_theme;
 
 pub struct ControlCenter {
     settings: Arc<dyn SettingsUiPort>,

@@ -725,3 +725,44 @@ Runnable directory: `target/package/LexWisp-v0.1.0-windows-x64/`. Archive: `dist
 The required `gpui-kit`, `gpui-kit-design-guides`, and `computer-use` skills and their task-required references were read before the corresponding work. The Computer Use control plane was retried once after reset; both calls returned an empty application inventory and `Browsers: Error: nodeRepl.fetch request failed`, while its advertised native launch/list-windows methods were unavailable. No unsupported UIA or screenshot workaround was substituted.
 
 Therefore the following remain pending rather than represented as complete: visual/button-level Compact → Expanded → Workspace inspection; proof from the live window that draft text, attachments, focus, and the active conversation survive every morph; native file picker and drag/drop; Escape/overlay hierarchy; Chinese and alternate IMEs; real streamed Send/Stop/Regenerate with a user-authorized Provider; attachment compatibility across actual Provider APIs; 100/125/150/200% DPI; physical multi-monitor and small-work-area layouts; Windows 10; clean-machine portability; prolonged resource trends; and per-process GPU memory. Geometry/state-machine tests and the responsive process smoke support, but do not replace, those native gates.
+
+## Design system integration — 2026-09-21
+
+Status: **design contract, semantic theme, shared metrics, and the specified current-shell visual corrections are integrated; locked formatting/check/Clippy/test/Release/package gates passed. Automated visual acceptance remains pending because the Windows Computer Use inventory failed after the prescribed retry and reset sequence.**
+
+### Integrated guidance and implementation
+
+- Validated every ZIP entry before extraction (no rooted or parent-traversal paths), then read all six files from `LexWisp_Design_System.zip` in full. The four guidance documents are retained under `docs/design-system/`; `DESIGN.md` is now linked from the repository README and named as the normative UI contract in `AGENTS.md`.
+- Installed `crates/lexwisp-ui/src/theme.rs` and `ui_metrics.rs`. The theme projects the LexWisp light/dark palettes over GPUI-Kit 0.6.1, synchronizes legacy tokens and GPUI Base, uses the system UI family, and keeps product color literals out of views. Shared metrics now own Main Shell sizes, minimums, sidebar range, transcript/composer width, spacing, typography, and radii.
+- Replaced the former local `surface.rs` theme helper. Window creation, warm re-show, Settings theme changes, and system-appearance observation all reapply the LexWisp projection; the observer no longer resets only the upstream GPUI-Kit theme. Main Shell size and clamp logic now consume shared metrics without changing monitor/work-area or transition ownership.
+- Applied the pack's current Chat corrections: the Composer uses the semantic raised surface and input border with the shared 12 DIP radius; normal assistant output is Ghost, user output is Tinted, and failed assistant output remains Destructive; routine `Ready`, `Restored`, and completed status text is suppressed while transient, generating, stopping, saving, unsaved, and error feedback remains available.
+- Compact no longer draws the structural header divider. Expanded and Workspace retain it. Workspace uses the shared 248–264 DIP sidebar range and aligns transcript and Composer to the same 840 DIP content column. Existing GPUI-Kit controls, retained entities, Shell identity, Chat semantics, persistence, provider flow, attachments, IME ownership, and HiddenWarm lifecycle were not refactored.
+- The independent `examples/lexwisp-ui-lab/` tree was not modified, formatted, built, or coupled into the product workspace.
+
+### Commands and automated evidence
+
+The following commands passed on Windows x64:
+
+```powershell
+cargo fmt --all
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild
+```
+
+- Workspace tests: **76 passed, 0 failed, 1 real-global-hotkey fixture ignored by default**.
+- A process-level smoke launched the packaged executable from `target/package/LexWisp-v0.1.0-windows-x64/`; it remained alive and responsive for the sample interval, was stopped, and packaging was rerun to restore clean staging. Because the smoke intentionally used a hidden background launch after native automation failed, it is launch evidence only and not visual acceptance.
+
+| Item | Observed value |
+| --- | --- |
+| OS / hardware / DPI | Windows 11 Pro for Workstations 10.0.26200 build 26200; Intel Core i5-13500, 20 logical processors; 34,132,275,200 bytes visible RAM; AppliedDPI 96 |
+| GPU inventory | NVIDIA RTX 5070 Ti driver 32.0.16.1047; Intel UHD 770 driver 31.0.101.3616; GameViewer virtual adapter driver 15.6.5.199 |
+| Hidden staged smoke point sample | Working set 61,038,592 bytes; Private Bytes 81,924,096; 497 handles; 41 threads; responsive |
+| Release executable | 36,585,472 bytes; SHA-256 `227286432ec7eef61941c511a49a745dfd54bf98f3b80c0e8aec183c2d441b58` |
+| Release ZIP | 14,142,963 bytes; SHA-256 `263b184e1c907bec232dec579cef107caf53338d05ece4cfa42b9a8586790544` |
+
+### Pending visual acceptance
+
+The `computer-use` skill was read and followed. Discovery returned an empty application inventory and `Browsers: Error: nodeRepl.fetch request failed`; a delayed retry and a full session reset/reinitialization produced the same result. Therefore Compact/Expanded/Workspace in Light and Dark, Windows scaling at 100/125/150/200%, focus rings, hover/selected states, text truncation, and physical multi-monitor/small-work-area behavior remain pending real-window inspection. No screenshot or button-level result is claimed.

@@ -21,13 +21,13 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AppContext, Context, Entity, ExternalPaths, InteractiveElement, IntoElement, ParentElement,
     PathPromptOptions, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
-    rems, size,
+    px, rems, size,
 };
 use lexwisp_core::{
     ChatAttachment, ChatDraft, ChatMessageSnapshot, ChatMessageStatus, ChatModelPreference,
     ChatSnapshot, ChatUiPort, ContextSnapshot, ConversationId, ProviderUiPort, ShellPresentation,
 };
-use lexwisp_ui::{ShellSession, SurfaceController};
+use lexwisp_ui::{ShellSession, SurfaceController, ui_metrics};
 
 const MAX_ATTACHMENTS: usize = 8;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -606,10 +606,19 @@ impl ChatExperience {
         let input = self.composer.read(cx).value().to_string();
         let send_enabled = self.snapshot.can_send
             && (!input.trim().is_empty() || !self.attachments.is_empty() || self.context.is_some());
-        let status = self
-            .transient_status
-            .clone()
-            .unwrap_or_else(|| self.snapshot.status_text.clone().into());
+        let status = self.transient_status.clone().or_else(|| {
+            let routine = matches!(
+                self.snapshot.status_text.as_str(),
+                "Ready" | "Restored" | "Answer complete"
+            );
+            if routine {
+                self.snapshot
+                    .has_unsaved_result
+                    .then(|| SharedString::from("Unsaved result"))
+            } else {
+                Some(self.snapshot.status_text.clone().into())
+            }
+        });
         let attaching = self.attachment_task.is_some();
 
         div()
@@ -619,10 +628,10 @@ impl ChatExperience {
             .flex_col()
             .gap_2()
             .p_3()
-            .rounded(cx.theme().radius_2xl())
+            .rounded(px(ui_metrics::RADIUS_COMPOSER))
             .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .border_color(cx.theme().input)
+            .bg(cx.theme().group_box)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.load_attachments(paths.paths().to_vec(), cx);
             }))
@@ -659,7 +668,7 @@ impl ChatExperience {
                             } else {
                                 cx.theme().muted_foreground
                             })
-                            .child(status),
+                            .children(status),
                     )
                     .when(self.snapshot.can_retry && !self.snapshot.can_stop, |this| {
                         this.child(
@@ -709,8 +718,9 @@ impl ChatExperience {
             .gap_2()
             .px_4()
             .py_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
+            .when(presentation != ShellPresentation::Compact, |this| {
+                this.border_b_1().border_color(cx.theme().border)
+            })
             .child(div().font_semibold().child("LexWisp"))
             .when(presentation != ShellPresentation::Compact, |this| {
                 this.child(
@@ -840,9 +850,9 @@ impl ChatExperience {
             self.snapshot.conversations.len()
         ]);
         div()
-            .w_64()
-            .min_w_56()
-            .max_w_72()
+            .w(px(ui_metrics::SIDEBAR_WIDTH))
+            .min_w(px(ui_metrics::SIDEBAR_MIN_WIDTH))
+            .max_w(px(ui_metrics::SIDEBAR_MAX_WIDTH))
             .h_full()
             .flex()
             .flex_col()
@@ -972,7 +982,21 @@ impl ChatExperience {
                     .flex()
                     .flex_col()
                     .child(self.render_header(ShellPresentation::Workspace, cx))
-                    .child(div().flex_1().min_h_0().child(self.render_transcript(cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h_full()
+                                    .max_w(px(ui_metrics::TRANSCRIPT_MAX_WIDTH))
+                                    .child(self.render_transcript(cx)),
+                            ),
+                    )
                     .children(self.snapshot.context_notice.clone().map(|notice| {
                         div()
                             .px_6()
@@ -985,7 +1009,7 @@ impl ChatExperience {
                         div().w_full().flex().justify_center().px_6().pb_4().child(
                             div()
                                 .w_full()
-                                .max_w(rems(52.))
+                                .max_w(px(ui_metrics::COMPOSER_MAX_WIDTH))
                                 .child(self.render_composer(false, cx)),
                         ),
                     ),
@@ -1042,11 +1066,11 @@ pub(crate) fn render_message(message: ChatMessageSnapshot) -> gpui_kit::AnyEleme
         MessageAlignment::Start
     };
     let variant = if message.is_user {
-        BubbleVariant::Filled
+        BubbleVariant::Tinted
     } else if message.status == ChatMessageStatus::FailedPartial {
         BubbleVariant::Destructive
     } else {
-        BubbleVariant::Muted
+        BubbleVariant::Ghost
     };
     let body = TextView::markdown(format!("message-body-{id}"), content.clone()).selectable(true);
     let code_blocks = fenced_code_blocks(&message.content);
