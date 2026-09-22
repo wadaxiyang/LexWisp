@@ -1,57 +1,96 @@
 # LexWisp — Agent Instructions
 
-## Product boundary
+## Product
 
-LexWisp is a portable native Windows x64 floating AI chat client. It has one popup window, a global hotkey, a tray icon, persistent conversations, and configurable OpenAI-compatible providers. Chat is a compiled first-party capability. There are no installable runtime plugins, selection-first actions, action palettes, source-text replacement, or secondary workspace window.
+LexWisp is a **lightweight native Windows x64 floating AI chat tool** built with Rust, GPUI, and Longbridge GPUI Kit. Its job is simple: open quickly from a global hotkey or tray icon, chat with an OpenAI-compatible provider, preserve local conversations, then get out of the way.
 
-Build only requested behavior and real dependencies. Do not introduce speculative plugin, tool, Agent, MCP, workflow, registry, or generic command frameworks. A future built-in Agent tool needs its own concrete requirement. Preserve working Chat, settings, Windows integration, and user data.
+The product has one popup window. Chat, history, and settings live inside it. The popup may be hidden while a request continues in the background.
 
-## Independent UI lab
+Do not rebuild the old broad product. LexWisp has **no runtime plugin system, selection-first actions, action palette, source-text replacement workflow, secondary workspace, generic Agent/MCP framework, or speculative extensibility layer**. Add a future built-in tool or Agent capability only when a concrete requirement asks for it.
 
-`examples/lexwisp-ui-lab/` is an independent reference project. Main product work may read and adapt it outside that directory. Do not modify, reformat, regenerate, or add a product dependency on anything under the lab unless the user explicitly requests changes to the lab itself.
+Prefer the smallest design that solves the current feature.
 
-## Ownership and dependencies
+## Architecture boundaries
 
-| Crate | Responsibility | Allowed project dependencies |
-| --- | --- | --- |
-| core | IDs, DTOs, rules, state machines, typed ports | none |
-| platform-windows | Win32, tray, hotkey, credentials, native window functions | core |
-| storage | versioned TOML, SQLite, migrations, consistent backup | core |
-| host | ChatController, run supervision, providers, tasks, shared services | core, storage, platform-windows |
-| ui | GPUI popup, Chat and settings views, transient view state | core |
-| app | composition root, startup, resources, packaging | assembly dependencies |
+| Crate | Owns |
+| --- | --- |
+| `lexwisp-core` | IDs, DTOs, rules, state machines, typed ports |
+| `lexwisp-platform-windows` | Win32, tray, hotkey, credentials, native window integration |
+| `lexwisp-storage` | versioned TOML, SQLite, migrations, backups |
+| `lexwisp-host` | ChatController, providers, run/task supervision, shared services |
+| `lexwisp-ui` | GPUI popup, Chat/history/settings views, transient view state |
+| `lexwisp-app` | composition root, startup, resources, packaging |
 
-Core must not import GPUI, Win32, HTTP, or SQLite. UI must not depend on Host implementations. Host owns one business Tokio runtime, reused HTTP clients, credentials, storage, task scopes, and run supervision. `HostHandles` is a typed set of initialized services, not a service locator. Keep typed ports; never add a global `Arc<Mutex<AppState>>`, reflection bus, or universal JSON invoke function.
+`lexwisp-core` must not depend on GPUI, Win32, HTTP, or SQLite. UI must not reach through typed ports into Host implementation details.
 
-ChatController owns conversations and stable conversation/message IDs. ExecutionStore owns live run state. Storage owns persistence. Views own cursors, selection, scrolling, and other transient UI state. Preserve one authoritative message body and observe the same ChatController when the popup is hidden or reopened.
+Host owns the reusable Tokio runtime, HTTP client, storage, credentials, provider services, and background run supervision. Do not add a service locator, global event bus, reflection registry, universal JSON invoke layer, or a global `Arc<Mutex<AppState>>`.
 
-## UI discipline
+ChatController owns conversation/message identity and authoritative chat state. Storage owns persisted data. Views own only transient UI state such as focus, selection, scrolling, and overlays.
 
-- `docs/design-system/DESIGN.md` is the normative visual and interaction contract. Before UI work, read it, `crates/lexwisp-ui/src/theme.rs`, `crates/lexwisp-ui/src/ui_metrics.rs`, Cargo.lock, workspace dependencies, and the relevant UI lab reference.
-- Longbridge GPUI Kit is mandatory. Before designing, reviewing, or changing UI, use the installed `gpui-kit` and `gpui-kit-design-guides` skills, read their required guides, and verify APIs against locked Kit source and matching examples. If either skill is unavailable, stop UI changes and report the blocker.
-- Import the GPUI family through `gpui_kit`. Reuse Kit inputs, buttons, selection, dialogs, themes, scrolling, lists, and `Root`. Do not copy upstream components or invent a general component library.
-- Raw product colors belong only in `theme.rs`. Views use semantic theme roles, `ui_metrics`, a 4 px spacing rhythm, restrained radii, and structural borders. The popup is the only native product window; settings and history appear inside it.
-- Initialize Kit once. The popup has one top-level Kit Root and shared overlay setup. Window creation contains no business logic. Use explicit quit behavior: closing or hiding the popup leaves tray/hotkey access; Quit performs bounded shutdown. Never use a hidden GUI keeper window.
-- Create InputState, focus/scroll handles, subscriptions, and stateful entities once in their owner. Render describes UI; it performs no I/O, subscriptions, tasks, or random ID creation. Use stable IDs and intent callbacks. Keep GPUI values on their owning thread, and validate window/request generations in background UI updates.
-- Coalesce streaming updates around 33 ms and flush terminal states immediately. Keep text selectable, cache Markdown by version where practical, and virtualize or page large lists. Scrolling up stops auto-follow.
-- IME candidate confirmation must not send. Shift+Enter inserts a newline. Escape respects overlays before hiding the popup. Menus, dialogs, and IME focus changes are not dismissal.
-- Only the designated composer accepts file drops. Inspect metadata and enforce attachment size/type limits before reading. Never send local file paths to a provider.
+## Resource and memory discipline
 
-## Execution, storage, and Windows
+Rust memory safety is not permission to waste memory. Code must remain bounded and have explicit ownership.
 
-- Tasks have an owner, scope, cancellation, and retained handle. No unowned spawn/detach. Blocking SQLite work belongs on its worker. Aborting a UI task cannot be assumed to stop already-running work.
-- RunSupervisor commits exactly one terminal state. Reject stale and post-terminal deltas. Use bounded queues and body limits; lagging subscribers recover from versioned snapshots. Cancellation preserves partial output.
-- ExecutionStore feeds UI and persistence independently. Checkpoint around 500 ms/16 KiB and immediately at terminal state. Enforce sequence/retention guards and deletion barriers. Storage failure leaves copyable output visible and reports it as unsaved.
-- OpenAI-compatible requests use configured providers and profiles. Preserve Base URL prefixes, attach credentials per request, parse SSE across UTF-8/JSON/chunk boundaries, and report truncated streams while keeping partial text. Do not add paid POST retries, disable TLS checks, or forward credentials across origins.
-- Versioned TOML is authoritative for settings; SQLite stores content. Validate and save atomically. Preserve corrupt or newer data rather than resetting it. Back up SQLite consistently with WAL. API keys belong only in Windows Credential Manager; diagnostics contain no keys or message bodies.
-- Paths are independent of cwd and support Chinese characters and spaces. Default data is `%LOCALAPPDATA%/LexWisp`; `portable.flag` selects executable-adjacent data. Credentials do not migrate with the data directory.
-- Encapsulate unsafe Windows code with ownership/thread/release comments. Centralize DPI/work-area conversion, including negative coordinates. Register a replacement hotkey before releasing the previous one and restore tray state after Explorer restarts. The hotkey only toggles the popup; it never captures selected text.
+- Every long-lived resource needs a clear owner and end of life: task, subscription, timer, channel, cache, request, file buffer, window/view state, and native handle.
+- **No detached or forgotten tasks.** Do not fire-and-forget `tokio::spawn`, `cx.spawn`, or equivalent work. Retain a handle or cancellation token and cancel/finish it when its owner is replaced, dropped, or the app shuts down.
+- Background work that must survive popup destruction is Host-owned, never secretly kept alive by a hidden view.
+- **No unbounded queues.** Use bounded channels with an explicit overload policy. A slow UI must recover from the latest/versioned state instead of accumulating infinite deltas.
+- **No unbounded in-memory collections.** Any `Vec`, `VecDeque`, `HashMap`, cache, log, history, or pending-work collection that can grow from user/network activity must define a limit, eviction/pagination rule, or persistence boundary.
+- Conversation history belongs in SQLite and is loaded incrementally. Do not keep the whole database or every rendered conversation resident in memory.
+- Caches must be bounded and invalidatable. Markdown/layout/image caches must use stable keys and a deliberate retention policy.
+- Do not keep attachment bytes in long-lived UI state. Validate metadata/limits before reading, keep bytes only as long as required for the request, and drop them afterward.
+- **Do not clone to silence the borrow checker.** Avoid repeated `.clone()` of message bodies, conversations, Markdown text, vectors, or attachment buffers, especially in render and streaming paths. Borrow where possible. Use `Arc<str>`, `Arc<[u8]>`, IDs, or another shared immutable representation only when ownership is genuinely shared.
+- Do not wrap broad state in `Arc<Mutex<_>>` merely to make code compile. Keep state ownership narrow and typed.
+- Avoid `Arc`/`Rc` reference cycles. Prefer parent ownership plus IDs or `Weak` back-references where a back-reference is necessary.
+- Streaming must not clone/rebuild the full assistant body for every token. Append efficiently, coalesce UI updates around 33 ms, and flush terminal states immediately.
+- Render code describes UI only. It must not perform I/O, database/network calls, spawn tasks, create subscriptions, generate persistent IDs, or repeatedly allocate large buffers.
+- Create InputState, focus/scroll handles, subscriptions, and other stateful GPUI entities once in their owner, not on each render.
+- Hiding the popup is not a reason to retain expensive UI forever. Respect the configured hidden-window retention period; after it expires, release popup-scoped views/resources while Host-owned chat work continues.
+- Do not add a hidden keeper window or invisible heavyweight UI tree to preserve state.
 
-## Quality and delivery
+When changing long-lived state, streaming, history, caching, attachments, or window lifecycle, check Release memory behavior. Repeated show/hide, conversation switching, and completed/cancelled requests should settle rather than show unexplained monotonic growth. Measure Working Set, Private Bytes, handles/threads, and GPU memory separately; never trim a working set to disguise growth.
 
-Read and reuse existing code first. Prefer concrete types, enums, guard clauses, and small meaningful ports. Avoid forwarding layers, unrelated refactors, and error swallowing. Do not unwrap fallible user, network, file, database, or system operations. Startup failures need visible diagnostics and controlled exit.
+## GPUI and UI
 
-Test real risks and regressions, not every getter/label or upstream library behavior. Keep test-only features in matching dev-dependencies; avoid `--all-features`. Never use live keys in automatic tests. Run:
+`docs/design-system/DESIGN.md` is the visual and interaction source of truth. Before visible UI changes, also inspect `crates/lexwisp-ui/src/theme.rs`, `ui_metrics.rs`, locked GPUI Kit APIs, and the relevant reference under `examples/lexwisp-ui-lab/`.
+
+The UI lab is reference material. Do not modify or depend on it unless the task explicitly targets the lab.
+
+- Longbridge GPUI Kit is the default component source. Reuse its inputs, buttons, dialogs, menus, themes, scrolling, lists, selection, and Root before creating product-local equivalents.
+- Do not copy upstream components into LexWisp or create a generic component framework.
+- Product colors live in `theme.rs`; views use semantic roles and shared metrics.
+- The popup is the only native product window. History and settings are pages in that popup.
+- Window creation contains no business logic.
+- Keep GPUI values on their owning thread and reject stale background UI updates using request/window generations where needed.
+- Virtualize or page large lists. Scrolling away from the bottom disables chat auto-follow.
+- IME confirmation must not send. Enter sends, Shift+Enter inserts a newline, and Escape resolves overlays before hiding the popup.
+- Only the composer accepts file drops. Never send local file paths to a provider.
+
+## Async, network, storage, and Windows
+
+- Reuse the Host runtime and HTTP client. Do not create a runtime or client per request.
+- Blocking SQLite work runs off the UI thread.
+- A run has one supervisor and exactly one terminal state. Reject stale/post-terminal deltas. Cancellation preserves partial output.
+- OpenAI-compatible requests preserve configured Base URL prefixes and parse SSE across chunk/UTF-8/JSON boundaries. Keep partial text on interruption. Do not retry paid POSTs automatically, disable TLS checks, or forward credentials across origins.
+- Settings use versioned TOML and atomic saves. SQLite stores content. Preserve corrupt/newer data instead of silently resetting it.
+- API keys live only in Windows Credential Manager. Logs and diagnostics contain no keys or message bodies.
+- Paths must not depend on cwd and must support Unicode/spaces. `portable.flag` selects executable-adjacent data; otherwise use `%LOCALAPPDATA%/LexWisp`.
+- Keep native Windows code narrowly encapsulated with explicit ownership/release rules. Hotkey replacement must register the new shortcut before releasing the old one. Restore the tray icon after Explorer restarts.
+- The global hotkey only toggles LexWisp. It never captures selected text.
+
+## Code quality
+
+Read and reuse existing code before adding abstractions. Prefer concrete types, enums, guard clauses, and small typed interfaces. Avoid forwarding layers, speculative architecture, unrelated refactors, and duplicated state.
+
+Do not `unwrap` fallible user input, files, network, database, credentials, or Windows operations. Surface actionable failures without corrupting or discarding user data.
+
+A change is not acceptable merely because it compiles. For resource-sensitive code, explicitly check ownership, cancellation, growth bounds, and repeated-use behavior.
+
+## Validation
+
+Test real risks and regressions rather than getters, labels, or upstream-library behavior. Never use live API keys in automated tests.
+
+Run:
 
 ```powershell
 cargo fmt --all -- --check
@@ -61,6 +100,6 @@ cargo test --workspace --locked --target x86_64-pc-windows-msvc
 cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
 ```
 
-Launch Release from the actual staged/extracted directory. `scripts/package.ps1` must package only explicit runtime files and required licenses, never developer data, logs, caches, or keys. Keep panic-unwind semantics unless justified otherwise.
+Validate the Release build from the staged/extracted directory. Packaging must contain only explicit runtime files and required notices, never developer data, logs, caches, or credentials.
 
-Record actual commands, platform/hardware/driver/DPI, artifact paths, Release size, and available measurements in `docs/implementation-log.md`. Distinguish compile, launch, functional acceptance, and performance acceptance. Measure working set, Private Bytes, handles/threads, and GPU memory separately; never trim working sets to hide growth. Do not fabricate screenshots or results. Mark unavailable native, IME, service, and clean-machine checks pending.
+Record meaningful commands, acceptance results, artifacts, and performance measurements in `docs/implementation-log.md`. Distinguish verified results from checks that could not be run; never fabricate screenshots, measurements, or platform behavior.
