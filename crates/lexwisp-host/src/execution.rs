@@ -800,10 +800,11 @@ mod tests {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            entries
-                .get_mut(&invocation_id)
-                .expect("entry retained")
-                .finished_at = Instant::now().checked_sub(RECENT_TERMINAL_TTL * 2);
+            ExecutionStore::prune_terminal_entries_locked(
+                &mut entries,
+                Instant::now() + RECENT_TERMINAL_TTL * 2,
+                None,
+            );
         }
         let trigger = InvocationId::new();
         start_chat(&store, trigger, Arc::new(Sink));
@@ -837,10 +838,11 @@ mod tests {
                 .entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            entries
-                .get_mut(&invocation_id)
-                .expect("entry retained")
-                .finished_at = Instant::now().checked_sub(RECENT_TERMINAL_TTL * 2);
+            ExecutionStore::prune_terminal_entries_locked(
+                &mut entries,
+                Instant::now() + RECENT_TERMINAL_TTL * 2,
+                None,
+            );
         }
         start_chat(&store, InvocationId::new(), Arc::new(Sink));
         let error = store
