@@ -7,23 +7,22 @@ use gpui_kit::component::{
         Attachment, AttachmentActions, AttachmentContent, AttachmentDescription, AttachmentGroup,
         AttachmentMedia, AttachmentTitle,
     },
-    bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariant, ButtonVariants},
     clipboard::Clipboard,
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    message::{Message, MessageAlignment, MessageContent, MessageFooter, MessageHeader},
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement,
-    text::TextView,
+    text::{TextView, TextViewStyle},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Context, Entity, ExternalPaths, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement, PathPromptOptions, Render, SharedString, Styled, Subscription, Task, WeakEntity,
-    Window, WindowControlArea, actions, div, px,
+    App, AppContext, Context, Entity, ExternalPaths, Focusable, InteractiveElement, IntoElement,
+    KeyBinding, ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, WeakEntity, Window, WindowControlArea, actions, div, px, rems,
 };
 use lexwisp_core::{
     ChatAttachment, ChatConversationSummary, ChatDraft, ChatMessageSnapshot, ChatMessageStatus,
@@ -57,6 +56,7 @@ enum Page {
     Chat,
     History,
     Settings,
+    About,
 }
 
 struct DraftAttachment {
@@ -466,6 +466,13 @@ impl ChatExperience {
         cx.notify();
     }
 
+    pub fn show_about(&mut self, cx: &mut Context<Self>) {
+        self.page = Page::About;
+        self.switcher_open = false;
+        self.model_open = false;
+        cx.notify();
+    }
+
     pub fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.page == Page::Chat && !self.switcher_open {
             self.composer
@@ -545,22 +552,22 @@ impl ChatExperience {
             Page::Chat => self.snapshot.title.clone().into(),
             Page::History => "Conversations".into(),
             Page::Settings => "Settings".into(),
+            Page::About => "About LexWisp".into(),
         };
         h_flex()
             .h(px(ui_metrics::HEADER_HEIGHT))
             .flex_none()
             .w_full()
             .justify_between()
-            .gap_2()
-            .px_3()
             .border_b_1()
-            .border_color(cx.theme().sidebar_border)
-            .bg(cx.theme().sidebar)
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
             .child(
                 h_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
+                    .gap_2()
+                    .pl_3()
                     .child(
                         Button::new("history-or-back")
                             .ghost()
@@ -591,19 +598,12 @@ impl ChatExperience {
                             })),
                     )
                     .child(
-                        Button::new("conversation-title")
-                            .ghost()
-                            .small()
-                            .label(title)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.page == Page::Chat {
-                                    this.open_switcher(window, cx);
-                                } else {
-                                    this.page = Page::Chat;
-                                    this.focus_composer(window, cx);
-                                    cx.notify();
-                                }
-                            })),
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_medium()
+                            .child(title),
                     )
                     .child(
                         div()
@@ -658,13 +658,29 @@ impl ChatExperience {
                             ),
                     )
                     .child(
-                        Button::new("hide-main-window")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Close)
-                            .accessibility_label("Hide window")
-                            .tooltip("Hide window · Esc")
-                            .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx))),
+                        div()
+                            .id("close-main-window")
+                            .aria_label("Hide window")
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Hide window · Esc").build(window, cx)
+                            })
+                            .w(px(ui_metrics::CAPTION_WIDTH))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .window_control_area(WindowControlArea::Close)
+                            .hover(|style| {
+                                style
+                                    .bg(cx.theme().danger)
+                                    .text_color(cx.theme().danger_foreground)
+                            })
+                            .active(|style| {
+                                style
+                                    .bg(cx.theme().danger_active)
+                                    .text_color(cx.theme().danger_foreground)
+                            })
+                            .child(Icon::new(IconName::Close).small()),
                     ),
             )
     }
@@ -745,9 +761,10 @@ impl ChatExperience {
             )
     }
 
-    fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_send = self.snapshot.can_send
             && (!self.composer.read(cx).value().trim().is_empty() || !self.attachments.is_empty());
+        let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
         div()
             .id("chat-composer-drop-zone")
             .relative()
@@ -758,7 +775,11 @@ impl ChatExperience {
             .p_3()
             .rounded(px(ui_metrics::RADIUS_COMPOSER))
             .border_1()
-            .border_color(cx.theme().input)
+            .border_color(if focused {
+                cx.theme().ring
+            } else {
+                cx.theme().input
+            })
             .bg(cx.theme().group_box)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.load_attachments(paths.paths().to_vec(), cx);
@@ -868,10 +889,12 @@ impl ChatExperience {
                 .gap_2()
                 .child(
                     div()
-                        .text_lg()
+                        .text_sm()
                         .font_medium()
-                        .child("What would you like to explore?"),
+                        .text_color(cx.theme().muted_foreground)
+                        .child("LexWisp"),
                 )
+                .child(div().text_lg().font_medium().child("What can I help with?"))
                 .child(
                     div()
                         .text_sm()
@@ -884,10 +907,10 @@ impl ChatExperience {
         MessageScroller::new(
             "main-window-transcript",
             self.messages.clone(),
-            move |index, _, _| {
+            move |index, _, cx| {
                 messages
                     .get(index)
-                    .map(|message| render_message(message))
+                    .map(|message| render_message(message, cx))
                     .unwrap_or_else(|| div().into_any_element())
             },
         )
@@ -909,6 +932,7 @@ impl ChatExperience {
         let title = item.title().to_owned();
         h_flex()
             .w_full()
+            .min_h(px(ui_metrics::HISTORY_ROW_HEIGHT))
             .gap_2()
             .child(
                 Button::new(format!("conversation-{id}"))
@@ -956,8 +980,8 @@ impl ChatExperience {
             .absolute()
             .top(px(ui_metrics::HEADER_HEIGHT))
             .left_3()
-            .right_3()
-            .h_72()
+            .w(px(ui_metrics::SWITCHER_WIDTH))
+            .max_h(px(320.0))
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
@@ -1020,7 +1044,7 @@ impl ChatExperience {
                         Button::new("rename-conversation")
                             .ghost()
                             .small()
-                            .label("Rename current…")
+                            .label("Rename…")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_rename_dialog(window, cx)
                             })),
@@ -1029,11 +1053,32 @@ impl ChatExperience {
                         Button::new("delete-conversation")
                             .ghost()
                             .small()
-                            .label("Delete current…")
+                            .label("Delete…")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.confirm_delete(window, cx)),
                             ),
                     ),
+            )
+    }
+
+    fn render_about(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .flex_1()
+            .w_full()
+            .gap_3()
+            .p_5()
+            .bg(cx.theme().background)
+            .child(div().text_lg().font_semibold().child("LexWisp"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .child("A floating AI chat client for Windows."),
             )
     }
 
@@ -1115,7 +1160,7 @@ impl ChatExperience {
 }
 
 impl Render for ChatExperience {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.transient_status.clone().or_else(|| {
             if self.snapshot.has_unsaved_result {
                 Some("Unsaved result".into())
@@ -1150,6 +1195,7 @@ impl Render for ChatExperience {
             .child(match self.page {
                 Page::History => self.render_history(cx).into_any_element(),
                 Page::Settings => self.settings_view.clone().into_any_element(),
+                Page::About => self.render_about(cx).into_any_element(),
                 Page::Chat => v_flex()
                     .flex_1()
                     .min_h_0()
@@ -1165,7 +1211,7 @@ impl Render for ChatExperience {
                                 .child(status),
                         )
                     })
-                    .child(div().px_4().pb_4().child(self.render_composer(cx)))
+                    .child(div().px_4().pb_4().child(self.render_composer(window, cx)))
                     .into_any_element(),
             })
             .when(self.switcher_open, |this| {
@@ -1174,7 +1220,7 @@ impl Render for ChatExperience {
     }
 }
 
-fn render_message(message: &ChatMessageSnapshot) -> gpui_kit::AnyElement {
+fn render_message(message: &ChatMessageSnapshot, cx: &mut App) -> gpui_kit::AnyElement {
     let id = message.id.as_str();
     let mut content = message.content.clone();
     if !message.attachments.is_empty() {
@@ -1191,60 +1237,87 @@ fn render_message(message: &ChatMessageSnapshot) -> gpui_kit::AnyElement {
                 .join(", "),
         );
     }
-    let status = match message.status {
-        ChatMessageStatus::Submitted => "Submitted",
-        ChatMessageStatus::Generating => "Generating",
-        ChatMessageStatus::Completed => "Complete",
-        ChatMessageStatus::CancelledPartial => "Stopped · partial",
-        ChatMessageStatus::FailedPartial => "Failed · partial kept",
-    };
-    let alignment = if message.is_user {
-        MessageAlignment::End
-    } else {
-        MessageAlignment::Start
-    };
-    let variant = if message.is_user {
-        BubbleVariant::Tinted
-    } else if message.status == ChatMessageStatus::FailedPartial {
-        BubbleVariant::Destructive
-    } else {
-        BubbleVariant::Ghost
-    };
-    let body = TextView::markdown(format!("message-body-{id}"), content.clone()).selectable(true);
-    let view = Message::new()
-        .alignment(alignment)
-        .header(MessageHeader::new().child(if message.is_user { "You" } else { "LexWisp" }))
-        .content(
-            MessageContent::new().bubble(
-                Bubble::new()
-                    .alignment(alignment)
-                    .with_variant(variant)
-                    .child(body),
-            ),
-        );
-    if message.is_user {
-        view.into_any_element()
-    } else {
-        view.footer(
-            MessageFooter::new()
-                .child(status)
-                .child(
-                    Clipboard::new(format!("copy-message-{id}"))
-                        .value(content)
-                        .tooltip("Copy answer"),
-                )
-                .children(
-                    fenced_code_blocks(&message.content)
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, code)| {
-                            Clipboard::new(format!("copy-code-{id}-{ix}"))
-                                .value(code)
-                                .tooltip(format!("Copy code block {}", ix + 1))
-                        }),
-                ),
+    let mut code_surface = div()
+        .bg(cx.theme().group_box)
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(px(ui_metrics::RADIUS_CONTROL));
+    let code_message_id = id.to_owned();
+    let body = TextView::markdown(format!("message-body-{id}"), content.clone())
+        .selectable(true)
+        .line_height(rems(1.45))
+        .style(
+            TextViewStyle::default()
+                .paragraph_gap(rems(0.75))
+                .heading_font_size(|level, _| {
+                    px(match level {
+                        1 => ui_metrics::FONT_PAGE_TITLE,
+                        2 => ui_metrics::FONT_SECTION + 1.0,
+                        _ => ui_metrics::FONT_BODY,
+                    })
+                })
+                .code_block(code_surface.style().clone()),
         )
-        .into_any_element()
+        .code_block_actions(move |code, _, _| {
+            Clipboard::new(format!("copy-code-{code_message_id}-{:?}", code.span))
+                .value(code.code())
+                .tooltip("Copy code block")
+        });
+    let status = match message.status {
+        ChatMessageStatus::Generating => Some("Generating"),
+        ChatMessageStatus::CancelledPartial => Some("Stopped · partial"),
+        ChatMessageStatus::FailedPartial => Some("Failed · partial kept"),
+        ChatMessageStatus::Submitted | ChatMessageStatus::Completed => None,
+    };
+    if message.is_user {
+        h_flex()
+            .w_full()
+            .justify_end()
+            .px_5()
+            .py_3()
+            .child(
+                v_flex()
+                    .max_w(px(520.0))
+                    .ml_12()
+                    .gap_1()
+                    .p_3()
+                    .rounded(px(ui_metrics::RADIUS_PANEL))
+                    .bg(cx.theme().accent)
+                    .child(body),
+            )
+            .into_any_element()
+    } else {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .px_5()
+            .py_3()
+            .child(
+                div()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("LexWisp"),
+            )
+            .child(body)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .when_some(status, |row, status| {
+                        row.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(status),
+                        )
+                    })
+                    .child(
+                        Clipboard::new(format!("copy-message-{id}"))
+                            .value(content)
+                            .tooltip("Copy answer"),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
@@ -1346,36 +1419,9 @@ fn is_text_extension(extension: &str) -> bool {
     )
 }
 
-fn fenced_code_blocks(markdown: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut current = None::<String>;
-    for line in markdown.lines() {
-        if line.trim_start().starts_with("```") {
-            if let Some(code) = current.take() {
-                blocks.push(code.trim_end_matches('\n').to_owned());
-            } else {
-                current = Some(String::new());
-            }
-        } else if let Some(code) = current.as_mut() {
-            code.push_str(line);
-            code.push('\n');
-        }
-    }
-    blocks
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{fenced_code_blocks, image_media_type, is_text_extension};
-
-    #[test]
-    fn fenced_code_blocks_are_independently_copyable() {
-        assert_eq!(
-            fenced_code_blocks("Before\n```rust\nlet answer = 42;\n```\nAfter"),
-            vec!["let answer = 42;"]
-        );
-        assert!(fenced_code_blocks("```unterminated").is_empty());
-    }
+    use super::{image_media_type, is_text_extension};
 
     #[test]
     fn attachment_types_are_explicitly_bounded() {

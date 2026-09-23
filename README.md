@@ -4,12 +4,12 @@ LexWisp is a portable native Windows x64 floating AI chat client built with Rust
 
 ## Run
 
-Extract `LexWisp-v0.1.0-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and `THIRD-PARTY-NOTICES.txt` beside it. With `portable.flag`, settings and `lexwisp.db` are saved in an adjacent `data` directory. Remove the flag before first launch to use `%LOCALAPPDATA%\LexWisp`. API keys stay in Windows Credential Manager in either mode.
+Extract `LexWisp-v0.1.1-windows-x64.zip` and run `LexWisp.exe`. Keep `vcruntime140.dll`, `portable.flag`, and `THIRD-PARTY-NOTICES.txt` beside it. With `portable.flag`, settings and `lexwisp.db` are saved in an adjacent `data` directory. Remove the flag before first launch to use `%LOCALAPPDATA%\LexWisp`. API keys stay in Windows Credential Manager in either mode.
 
-First launch opens Settings in the popup. Enter an OpenAI-compatible Base URL and model ID. If the endpoint requires Bearer authentication, enter an API key, select **Test**, then **Save provider**. Configure the hotkey, theme, startup, local recording, and hidden-window retention in the same Settings page.
+Launch starts LexWisp in the notification area without opening a window. Press the global hotkey or left-click the notification-area icon to open Chat. Open Settings from the icon's right-click menu, then enter an OpenAI-compatible Base URL and model ID. If the endpoint requires Bearer authentication, enter an API key, select **Test**, then **Save provider**. Configure the hotkey, theme, startup, local recording, and hidden-window retention in the same Settings page.
 
 - The default global hotkey is `Ctrl + Alt + Space`; it toggles the popup directly. No selected text is required or captured.
-- The notification-area icon opens Chat on left click. Its menu offers Chat, Settings, and Exit. A second launch wakes the existing process.
+- The notification-area icon opens Chat on left click. Its right-click menu offers Chat, Settings, About LexWisp, and Exit. A second launch leaves the existing process in its current state.
 - The popup follows the layout in `examples/lexwisp-ui-lab/src/lexwisp_main_window.rs`: a quiet header, conversation switcher, transcript, and contained composer. History and Settings are pages within the same popup. The popup has no workspace or second native panel.
 - Use **New chat** or `Ctrl+N` to start a conversation. `Ctrl+K` opens the switcher; `Ctrl+H` opens searchable conversation history. History can filter favorites. Conversations can be renamed or deleted with confirmation.
 - Enter sends; Shift+Enter inserts a newline. The composer supports Send, Stop, Retry, and Fast/Smart model preferences. Assistant Markdown is selectable; answers and fenced code blocks have copy controls.

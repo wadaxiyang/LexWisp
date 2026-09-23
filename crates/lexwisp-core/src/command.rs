@@ -8,5 +8,6 @@ pub enum HostUiCommand {
     ToggleMainShell,
     ShowMainShell,
     ShowSettings,
+    ShowAbout,
     Quit,
 }

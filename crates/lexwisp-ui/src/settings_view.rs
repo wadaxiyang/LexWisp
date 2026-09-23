@@ -9,16 +9,17 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Task,
-    Window, div,
+    Window, div, px,
 };
 use lexwisp_core::{
     AppSettings, GlobalHotkey, HistoryUiPort, ProviderDraft, ProviderUiPort, SettingsUiPort,
     ThemePreference,
 };
 
-use crate::theme::apply_theme;
+use crate::{theme::apply_theme, ui_metrics};
 
 pub struct SettingsView {
     settings: Arc<dyn SettingsUiPort>,
@@ -118,7 +119,7 @@ impl SettingsView {
             stream: provider.stream,
             authentication: provider.use_authentication,
             busy: false,
-            status: "Configure a provider to start chatting.".into(),
+            status: "".into(),
             task: None,
         }
     }
@@ -269,52 +270,78 @@ impl SettingsView {
             .child(div().text_sm().child(label))
             .child(Input::new(input).aria_label(label))
     }
+
+    fn setting_row(
+        label: &'static str,
+        control: impl IntoElement,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .min_h(px(ui_metrics::SETTINGS_ROW_HEIGHT))
+            .justify_between()
+            .gap_3()
+            .px_3()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().text_sm().child(label))
+            .child(control)
+    }
 }
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().size_full().min_h_0().overflow_y_scrollbar().gap_4().p_4()
+        let status = self.status.to_string().to_ascii_lowercase();
+        let general_feedback = status.contains("settings");
+        let provider_feedback = status.contains("provider")
+            || status.starts_with("connected")
+            || status.starts_with("saved ");
+        let backup_feedback = status.contains("backup");
+        v_flex().size_full().min_h_0().overflow_y_scrollbar().gap_5().p_5()
             .bg(cx.theme().background)
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(self.status.clone()))
-            .child(v_flex().gap_3().pb_4().border_b_1().border_color(cx.theme().border)
+            .child(v_flex().gap_2()
                 .child(div().font_medium().child("General"))
-                .child(h_flex().gap_2()
-                    .child(Button::new("hotkey").outline().small()
-                        .label(format!("Hotkey: {}", self.draft.hotkey().label()))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let current = this.draft.hotkey();
-                            let next = GlobalHotkey::ALL[(GlobalHotkey::ALL.iter().position(|item| *item == current).unwrap_or(0) + 1) % GlobalHotkey::ALL.len()];
-                            this.draft = this.draft.clone().with_hotkey(next);
-                            cx.notify();
-                        })))
-                    .child(Button::new("theme").outline().small()
-                        .label(format!("Theme: {}", self.draft.theme().label()))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let current = this.draft.theme();
-                            let next = ThemePreference::ALL[(ThemePreference::ALL.iter().position(|item| *item == current).unwrap_or(0) + 1) % ThemePreference::ALL.len()];
-                            this.draft = this.draft.clone().with_theme(next);
-                            cx.notify();
-                        })))
-                    .child(Button::new("popup-retention").outline().small()
-                        .label(format!("Keep hidden window: {} s", self.draft.popup_retention_seconds()))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            const SECONDS: [u64; 4] = [0, 30, 120, 600];
-                            let current = this.draft.popup_retention_seconds();
-                            let next = SECONDS[(SECONDS.iter().position(|seconds| *seconds == current).unwrap_or(0) + 1) % SECONDS.len()];
-                            this.draft = this.draft.clone().with_popup_retention_seconds(next);
-                            cx.notify();
-                        }))))
-                .child(Switch::new("launch-at-startup").label("Launch at startup")
-                    .checked(self.draft.launch_at_startup()).on_change(cx.listener(|this, value, _, cx| {
-                        this.draft = this.draft.clone().with_launch_at_startup(*value); cx.notify();
-                    })))
-                .child(Switch::new("recording").label("Save conversations locally")
-                    .checked(self.draft.recording_enabled()).on_change(cx.listener(|this, value, _, cx| {
-                        this.draft = this.draft.clone().with_recording_enabled(*value); cx.notify();
-                    })))
-                .child(Button::new("save-general").primary().small().label("Save settings")
+                .child(v_flex().overflow_hidden().rounded(px(ui_metrics::RADIUS_PANEL))
+                    .border_1().border_color(cx.theme().border).bg(cx.theme().group_box)
+                    .child(Self::setting_row("Global hotkey",
+                        Button::new("hotkey").ghost().small().label(self.draft.hotkey().label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let current = this.draft.hotkey();
+                                let next = GlobalHotkey::ALL[(GlobalHotkey::ALL.iter().position(|item| *item == current).unwrap_or(0) + 1) % GlobalHotkey::ALL.len()];
+                                this.draft = this.draft.clone().with_hotkey(next); cx.notify();
+                            })), cx))
+                    .child(Self::setting_row("Appearance",
+                        Button::new("theme").ghost().small().label(self.draft.theme().label())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let current = this.draft.theme();
+                                let next = ThemePreference::ALL[(ThemePreference::ALL.iter().position(|item| *item == current).unwrap_or(0) + 1) % ThemePreference::ALL.len()];
+                                this.draft = this.draft.clone().with_theme(next); cx.notify();
+                            })), cx))
+                    .child(Self::setting_row("Keep hidden window",
+                        Button::new("popup-retention").ghost().small()
+                            .label(format!("{} s", self.draft.popup_retention_seconds()))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                const SECONDS: [u64; 4] = [0, 30, 120, 600];
+                                let current = this.draft.popup_retention_seconds();
+                                let next = SECONDS[(SECONDS.iter().position(|seconds| *seconds == current).unwrap_or(0) + 1) % SECONDS.len()];
+                                this.draft = this.draft.clone().with_popup_retention_seconds(next); cx.notify();
+                            })), cx))
+                    .child(Self::setting_row("Launch at startup",
+                        Switch::new("launch-at-startup").accessibility_label("Launch at startup")
+                            .checked(self.draft.launch_at_startup()).on_change(cx.listener(|this, value, _, cx| {
+                                this.draft = this.draft.clone().with_launch_at_startup(*value); cx.notify();
+                            })), cx))
+                    .child(Self::setting_row("Save conversations locally",
+                        Switch::new("recording").accessibility_label("Save conversations locally")
+                            .checked(self.draft.recording_enabled()).on_change(cx.listener(|this, value, _, cx| {
+                                this.draft = this.draft.clone().with_recording_enabled(*value); cx.notify();
+                            })), cx)))
+                .child(h_flex().justify_end().child(Button::new("save-general").outline().small().label("Save settings")
                     .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| this.save_general(window, cx)))))
-            .child(v_flex().gap_3().pb_4().border_b_1().border_color(cx.theme().border)
+                .when(general_feedback, |section| section.child(div().text_sm()
+                    .text_color(cx.theme().muted_foreground).child(self.status.clone()))))
+            .child(v_flex().gap_3().rounded(px(ui_metrics::RADIUS_PANEL))
+                .border_1().border_color(cx.theme().border).bg(cx.theme().group_box).p_3()
                 .child(div().font_medium().child("Provider and model"))
                 .child(Self::field("Name", &self.name))
                 .child(Self::field("Base URL", &self.url))
@@ -339,12 +366,16 @@ impl Render for SettingsView {
                     .child(Button::new("test-provider").outline().small().label("Test")
                         .disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.test_provider(cx))))
                     .child(Button::new("save-provider").primary().small().label("Save provider")
-                        .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| this.save_provider(window, cx))))))
+                        .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| this.save_provider(window, cx)))))
+                .when(provider_feedback, |section| section.child(div().text_sm()
+                    .text_color(cx.theme().muted_foreground).child(self.status.clone()))))
             .child(v_flex().gap_2()
                 .child(div().font_medium().child("History and data"))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("Delete a conversation from History. Backups include saved conversations and replies."))
                 .child(Button::new("backup").outline().small().label("Create backup")
-                    .disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.backup(cx)))))
+                    .disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.backup(cx))))
+                .when(backup_feedback, |section| section.child(div().text_sm()
+                    .text_color(cx.theme().muted_foreground).child(self.status.clone()))))
     }
 }

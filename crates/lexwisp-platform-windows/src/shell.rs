@@ -44,13 +44,13 @@ use windows_sys::Win32::{
 pub const MESSAGE_WINDOW_CLASS: &str = "LexWisp.MessageWindow.v1";
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_COMMAND_QUEUE: u32 = WM_APP + 2;
-pub const WM_LEXWISP_WAKE: u32 = WM_APP + 3;
 const HOTKEY_PRIMARY: i32 = 1;
 const HOTKEY_REPLACEMENT: i32 = 2;
 const TRAY_ID: u32 = 1;
 const MENU_MAIN_SHELL: usize = 100;
 const MENU_SETTINGS: usize = 102;
 const MENU_EXIT: usize = 103;
+const MENU_ABOUT: usize = 104;
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const RUN_VALUE: &str = "LexWisp";
 
@@ -406,10 +406,6 @@ unsafe extern "system" fn window_proc(
                 state.surface_intents.send(HostUiCommand::ToggleMainShell);
                 return 0;
             }
-            WM_LEXWISP_WAKE => {
-                state.surface_intents.send(HostUiCommand::ShowMainShell);
-                return 0;
-            }
             WM_COMMAND_QUEUE => {
                 while let Ok(command) = state.commands.try_recv() {
                     if handle_command(window, state, command) {
@@ -511,9 +507,11 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
         }
         let main_shell = wide("Open LexWisp");
         let settings = wide("Settings");
+        let about = wide("About LexWisp");
         let exit = wide("Exit LexWisp");
         AppendMenuW(menu, MF_STRING, MENU_MAIN_SHELL, main_shell.as_ptr());
         AppendMenuW(menu, MF_STRING, MENU_SETTINGS, settings.as_ptr());
+        AppendMenuW(menu, MF_STRING, MENU_ABOUT, about.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
         let mut point = POINT::default();
@@ -534,7 +532,10 @@ fn show_tray_menu(window: HWND, state: &ThreadState) {
                 state.surface_intents.send(HostUiCommand::ShowMainShell);
             }
             MENU_SETTINGS => {
-                let _ = state.ui_commands.try_send(HostUiCommand::ShowSettings);
+                state.surface_intents.send(HostUiCommand::ShowSettings);
+            }
+            MENU_ABOUT => {
+                state.surface_intents.send(HostUiCommand::ShowAbout);
             }
             MENU_EXIT => {
                 let _ = state.ui_commands.try_send(HostUiCommand::Quit);

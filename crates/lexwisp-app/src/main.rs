@@ -62,6 +62,10 @@ fn handle_ui_command(
             .update(cx, |surfaces, cx| surfaces.show_settings(cx))
             .and_then(|result| result)
             .map_err(|error| ("open Settings", error)),
+        HostUiCommand::ShowAbout => surfaces
+            .update(cx, |surfaces, cx| surfaces.show_about(cx))
+            .and_then(|result| result)
+            .map_err(|error| ("open About", error)),
         HostUiCommand::Quit => {
             cx.update(|cx| cx.quit());
             return true;
@@ -113,7 +117,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let instance = match SingleInstanceGuard::acquire()? {
         SingleInstance::First(instance) => instance,
-        SingleInstance::ExistingNotified => return Ok(()),
+        SingleInstance::Existing => return Ok(()),
     };
     let executable = std::env::current_exe()
         .map_err(|error| format!("could not locate LexWisp.exe: {error}"))?;
@@ -121,7 +125,6 @@ fn run() -> Result<(), String> {
     let config = ConfigStore::discover(&executable, writer).map_err(|error| error.to_string())?;
     let loaded = config.load().map_err(|error| error.to_string())?;
     let initial_settings = loaded.settings().clone();
-    let first_run = loaded.first_run();
     let (ui_sender, ui_receiver) = async_channel::bounded(32);
     let mut shell = WindowsShell::start(initial_settings.hotkey(), ui_sender.clone())
         .map_err(|error| error.to_string())?;
@@ -198,17 +201,9 @@ fn run() -> Result<(), String> {
                 _surface_intent_bridge: surface_intent_bridge,
             });
 
-            if (first_run || initial_hotkey_error.is_some())
-                && let Err(error) =
-                    surfaces.update(cx, |surfaces, cx| surfaces.show_settings(cx))
-            {
-                show_startup_error(&format!("Could not open Settings.\n\n{error:#}"));
-                cx.quit();
-                return;
-            }
             if let Some(error) = &initial_hotkey_error {
                 show_startup_error(&format!(
-                    "The configured global shortcut could not be registered. Choose another shortcut in Settings.\n\n{error}"
+                    "The configured global shortcut could not be registered. Open Settings from the notification-area menu to choose another shortcut.\n\n{error}"
                 ));
             }
         });

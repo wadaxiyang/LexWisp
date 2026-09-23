@@ -89,6 +89,14 @@ impl SurfaceController {
         Ok(())
     }
 
+    pub fn show_about(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        self.show(cx)?;
+        if let Some(entry) = &self.entry {
+            entry.view.update(cx, |view, cx| view.show_about(cx));
+        }
+        Ok(())
+    }
+
     pub fn toggle_main_shell(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         if self
             .entry
@@ -326,7 +334,7 @@ impl Render for LexWispWindowRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .bg(cx.theme().background)
+            .bg(cx.theme().transparent)
             .text_color(cx.theme().foreground)
             .font_family(cx.theme().font_family.clone())
             .child(self.content.clone())

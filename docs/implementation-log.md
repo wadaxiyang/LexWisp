@@ -809,3 +809,66 @@ cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-w
 ### Pending visual acceptance
 
 The `computer-use` skill was read and followed. Discovery returned an empty application inventory and `Browsers: Error: nodeRepl.fetch request failed`; a delayed retry and a full session reset/reinitialization produced the same result. Therefore Compact/Expanded/Workspace in Light and Dark, Windows scaling at 100/125/150/200%, focus rings, hover/selected states, text truncation, and physical multi-monitor/small-work-area behavior remain pending real-window inspection. No screenshot or button-level result is claimed.
+
+## Fluent shell + Zed content restyle — 2026-09-23
+
+Status: **implemented, packaged, and visually inspected in the native Release build at 100% scaling.** The standalone UI lab was read but not changed. The unrelated pre-existing deletion of `LexWisp_PLUGIN_ACTION_REMOVAL_SPEC.md` was not touched.
+
+### Changes
+
+- Updated the normative design contract to Fluent shell + Zed content. A compact neutral palette now projects shell, canvas, raised working surface, overlay, text, accent, selection, and danger into GPUI-Kit 0.6.1. Both modes use the system UI font and shared geometry.
+- Kept the existing single fixed popup, Mica request, Kit Root, close interception, and warm retention. The root is transparent so the shell can harmonize with Mica. The 42 DIP header has a plain text title, a drag region, compact Kit actions, and a 46 DIP Close caption area with `WindowControlArea::Close`, destructive hover, tooltip, and accessible label.
+- Replaced the assistant message bubble/footer with selectable Markdown flowing on the canvas, a restrained sender label, useful partial/generating status only, and a quiet copy action. User messages use a compact neutral right-aligned surface. Kit TextView owns code rendering and per-block copy actions, with a raised technical code surface. The retained Kit MessageScroller still owns virtualization and auto-follow.
+- The composer has one raised surface and a focus border around the group. The switcher now fits its contents instead of keeping a large empty fixed height. History remains a flat paged list. General settings use grouped rows with right-aligned values and switches; the provider form is one orderly contained region, and status appears near the operation's section.
+
+### Commands and environment
+
+All required commands passed on x86_64-pc-windows-msvc:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+.\scripts\package.ps1 -SkipBuild
+```
+
+The workspace suite had **39 passed, 0 failed, 1 physical-hotkey fixture ignored**. `git diff --check` passed. The Release executable is `target/x86_64-pc-windows-msvc/release/LexWisp.exe` (31,828,992 bytes). The clean portable stage is `target/package/LexWisp-v0.1.0-windows-x64/`; it contains exactly the executable, `vcruntime140.dll`, `portable.flag`, README, and third-party notices. The archive is `dist/LexWisp-v0.1.0-windows-x64.zip` (12,362,083 bytes), SHA-256 `b982f2ad896326840b64960c743b4a24f8bedde78209ff308e0dee621113fe46`.
+
+Environment: Windows NT build 26200, display version 25H2 (registry ProductName reports Windows 10 Pro for Workstations), 13th Gen Intel Core i5-13500 with 20 logical processors, 34,132,275,200 bytes physical RAM, system DPI 96. GPU inventory: NVIDIA GeForce RTX 5070 Ti driver 32.0.16.1047, Intel UHD Graphics 770 driver 31.0.101.3616, GameViewer Virtual Display Adapter driver 15.6.5.199.
+
+### Native acceptance and measurements
+
+The final staged Release was launched through Windows Computer Use. At 96 DPI, native screenshots were inspected for light and dark empty Chat, Settings, History, switcher, and a populated user/assistant answer with headings, list, emphasis, and a Rust code block. A temporary loopback-only `127.0.0.1:18765` OpenAI-compatible SSE fixture supplied the synthetic answer; no key, external Provider, or paid request was used. The answer rendered without an assistant bubble or permanent completed status, its code copy action was visible inside the code block, the compact user surface remained distinct, and the composer focus border was visible. Escape dismissed the switcher, the settings theme change applied in place, and hiding then waking the staged app preserved the conversation. The temporary fixture was stopped and packaging was rerun to remove generated portable data. Screenshots were inspected inline; no screenshot files were exported.
+
+One populated dark Chat point sample: working set 77,918,208 bytes; Private Bytes 77,332,480; 637 handles; 53 threads; GPU process Local Usage 19,488,768 bytes and Non-Local Usage 1,236,992 bytes. After one hide/wake cycle: working set 78,360,576 bytes; Private Bytes 77,619,200; 633 handles; 52 threads; GPU Local/Non-Local Usage unchanged. These are point samples, not a long-run growth claim; no working-set trim was used.
+
+Pending: 125%/150% DPI and small/negative-coordinate multi-monitor visual checks, Windows 10 fallback, Chinese IME candidate confirmation, physical global hotkey/tray and pin, real external Provider responses, attachment picker/drop, failure/partial visual states, full keyboard accessibility audit, clean-machine portability, and prolonged memory/GPU trend measurement. Those are not inferred from the successful compile, loopback flow, or 96 DPI screenshots.
+
+## Background launch and notification-area controls — 2026-09-23
+
+Status: **implemented and packaged for v0.1.1.** First launch from the staged portable directory remained resident without opening the popup. The physical global hotkey opened Chat and hid it on the next press. A second executable launch while hidden exited and left the existing instance hidden. The tray menu mapping is implemented in Win32; a physical left/right tray click was not available to the Windows Computer Use target inventory, so that interaction remains pending native acceptance.
+
+- Removed the first-run Settings auto-open. A shortcut registration failure still reports an actionable startup error and directs the user to Settings through the notification-area menu.
+- Left click uses the idempotent ShowMainShell command, while the hotkey continues to toggle. The right-click menu now offers Open LexWisp, Settings, About LexWisp, and Exit LexWisp. About opens a page in the existing popup and displays the version compiled into the UI crate.
+- A second launch no longer wakes the running instance. It releases its mutex handle and exits without changing the popup state.
+- Advanced the workspace and lockfile to 0.1.1. The prior Fluent shell + Zed content work is included in this release. The independent UI lab was not changed.
+
+The following commands passed on x86_64-pc-windows-msvc after the changes:
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace --locked --target x86_64-pc-windows-msvc
+cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+cargo test --workspace --locked --target x86_64-pc-windows-msvc
+cargo build -p lexwisp-app --bin LexWisp --release --locked --target x86_64-pc-windows-msvc
+./scripts/package.ps1 -SkipBuild -Version 0.1.1
+git diff --check
+```
+
+The workspace suite had **39 passed, 0 failed, 1 physical-hotkey fixture ignored**. The Release executable is `target/x86_64-pc-windows-msvc/release/LexWisp.exe` (31,833,088 bytes), SHA-256 `acd00d19afa09587038632537e773616fa64eddf244111d255ac958194129a02`. The clean staged directory is `target/package/LexWisp-v0.1.1-windows-x64/` and contains exactly `LexWisp.exe`, `vcruntime140.dll`, `portable.flag`, `README.md`, and `THIRD-PARTY-NOTICES.txt`. The archive is `dist/LexWisp-v0.1.1-windows-x64.zip` (12,360,203 bytes), SHA-256 `7ca51d4979a682965b67734be41bf621b83e8c9e7ce4b24fa697cd5756930e25`.
+
+Environment: Windows 11 Pro for Workstations 10.0.26200, Intel Core i5-13500, system DPI 96; NVIDIA GeForce RTX 5070 Ti driver 32.0.16.1047, Intel UHD Graphics 770 driver 31.0.101.3616, GameViewer virtual adapter driver 15.6.5.199. The staged process was observed alive with no targetable popup immediately after first launch; the hotkey then opened a responsive Chat window at 96 DPI, inspected through Windows Computer Use. The next hotkey press hid the window. A second staged EXE launch returned successfully and did not expose a popup. After the smoke, the test process was stopped and the package was rebuilt to remove generated portable data.
+
+One hidden-after-wake point sample: working set 70,606,848 bytes; Private Bytes 73,428,992; 596 handles; 51 threads; GPU process Local Usage 19,488,768 bytes, Non-Local Usage 1,081,344 bytes. No working-set trim was used. These point samples establish launch responsiveness, not sustained performance. Physical tray clicks, the About page reached through that menu, alternate DPI, Chinese IME, Windows 10, and clean-machine portability remain pending.

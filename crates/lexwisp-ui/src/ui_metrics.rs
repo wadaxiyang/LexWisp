@@ -33,6 +33,14 @@ pub const BORDER: f32 = 1.0;
 pub const FOCUS_BORDER: f32 = 2.0;
 
 pub const HEADER_HEIGHT: f32 = 42.0;
+pub const CAPTION_WIDTH: f32 = 46.0;
+pub const HEADER_ACTION_SIZE: f32 = 30.0;
+pub const TRANSCRIPT_INSET: f32 = 20.0;
+pub const MESSAGE_TURN_GAP: f32 = 24.0;
+pub const COMPOSER_INSET: f32 = 16.0;
+pub const SETTINGS_ROW_HEIGHT: f32 = 48.0;
+pub const HISTORY_ROW_HEIGHT: f32 = 40.0;
+pub const SWITCHER_WIDTH: f32 = 560.0;
 pub const MAIN_WINDOW_WIDTH: f32 = 680.0;
 pub const MAIN_WINDOW_HEIGHT: f32 = 640.0;
 
